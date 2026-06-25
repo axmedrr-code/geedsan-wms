@@ -1,0 +1,46 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: geedsan-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: geedsan_wms
+      POSTGRES_USER: geedsan
+      POSTGRES_PASSWORD: GeedSan@Secure2024
+
+    ports:
+      - "5432:5432"
+
+  backend:
+    build: ./backend
+    container_name: geedsan-backend
+    restart: unless-stopped
+
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: geedsan_wms
+      DB_USER: geedsan
+      DB_PASSWORD: GeedSan@Secure2024
+
+    ports:
+      - "5000:5000"
+
+    depends_on:
+      - postgres
+
+  frontend:
+    build: ./frontend
+    container_name: geedsan-frontend
+    restart: unless-stopped
+
+    ports:
+      - "3000:3000"
+
+    depends_on:
+      - backend
