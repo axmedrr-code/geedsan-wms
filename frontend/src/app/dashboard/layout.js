@@ -58,7 +58,7 @@ export default function DashboardLayout({ children }) {
           </div>
           {!collapsed && (
             <div>
-              <p className="font-bold text-white text-sm font-display">GEEDSAN</p>
+              <p className="font-bold text-white text-sm font-display">NUWACO</p>
               <p className="text-slate-500 text-xs">WMS v1.0</p>
             </div>
           )}
@@ -129,7 +129,7 @@ export default function DashboardLayout({ children }) {
           </button>
           <div className="flex items-center gap-2">
             <Droplets className="w-4 h-4 text-primary-400" />
-            <span className="font-bold text-sm font-display">GEEDSAN WMS</span>
+            <span className="font-bold text-sm font-display">NUWACO WMS</span>
           </div>
         </header>
 

@@ -1,7 +1,7 @@
 {
-  "name": "geedsan-wms-frontend",
+  "name": "nuwaco-wms-frontend",
   "version": "1.0.0",
-  "description": "GEEDSAN Water Meter Management System - Frontend Dashboard",
+  "description": "NUWACO Water Meter Management System - Frontend Dashboard",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

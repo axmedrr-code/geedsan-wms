@@ -44,8 +44,8 @@ export default function LoginPage() {
             <div className="inline-flex items-center justify-center w-16 h-16 bg-primary-500/10 border border-primary-500/20 rounded-2xl mb-4">
               <Droplets className="w-8 h-8 text-primary-400" />
             </div>
-            <h1 className="text-2xl font-bold text-white font-display">GEEDSAN WMS</h1>
-            <p className="text-slate-400 text-sm mt-1">Water Meter Management System</p>
+            <h1 className="text-2xl font-bold text-white font-display">NUWACO WMS</h1>
+            <p className="text-slate-400 text-sm mt-1">LoRaWAN Water Meter Management</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -89,7 +89,7 @@ export default function LoginPage() {
             <p className="text-xs text-slate-500 font-medium mb-3 uppercase tracking-wider">Demo Accounts</p>
             <div className="space-y-2">
               {[
-                { role: 'Admin',    user: 'admin',     pass: 'Admin@Geedsan2024', color: 'text-purple-400' },
+                { role: 'Admin',    user: 'admin',     pass: 'Admin@Nuwaco2024', color: 'text-purple-400' },
                 { role: 'Operator', user: 'operator1', pass: 'Operator@2024',     color: 'text-blue-400' },
                 { role: 'Viewer',   user: 'viewer1',   pass: 'Viewer@2024',       color: 'text-slate-400' },
               ].map(d => (
@@ -103,7 +103,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-xs text-slate-600 mt-4">
-          GEEDSAN WMS v1.0 · LoRaWAN MLW Meter Dashboard
+          NUWACO WMS v1.0 · LoRaWAN Meter Management
         </p>
       </div>
     </div>

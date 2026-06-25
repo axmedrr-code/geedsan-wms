@@ -1,7 +1,7 @@
 {
-  "name": "geedsan-wms-backend",
+  "name": "nuwaco-wms-backend",
   "version": "1.0.0",
-  "description": "GEEDSAN Water Meter Management System - Backend API",
+  "description": "NUWACO Water Meter Management System - Backend API",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
@@ -26,7 +26,8 @@
     "cron": "^3.1.6",
     "compression": "^1.7.4",
     "helmet": "^7.1.0",
-    "morgan": "^1.10.0"
+    "morgan": "^1.10.0",
+    "mqtt": "^5.4.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

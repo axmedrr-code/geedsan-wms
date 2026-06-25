@@ -6,7 +6,7 @@ import { Toaster } from 'react-hot-toast';
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
 
 export const metadata = {
-  title: 'GEEDSAN WMS - Water Meter Management',
+  title: 'NUWACO WMS - Water Meter Management',
   description: 'LoRaWAN Water Meter Management System'
 };
 

@@ -81,6 +81,14 @@ app.listen(PORT, '0.0.0.0', async () => {
   } catch (err) {
     console.warn('Scheduler error:', err.message);
   }
+
+  // Start MQTT service for LoRaWAN integration
+  try {
+    const mqttService = require('./services/mqttService');
+    mqttService.connect();
+  } catch (err) {
+    console.warn('MQTT service error:', err.message);
+  }
 });
 
 module.exports = app;

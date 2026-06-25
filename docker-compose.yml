@@ -5,20 +5,29 @@ services:
     image: postgres:16-alpine
     container_name: geedsan-postgres
     restart: unless-stopped
-
     environment:
       POSTGRES_DB: geedsan_wms
       POSTGRES_USER: geedsan
       POSTGRES_PASSWORD: GeedSan@Secure2024
-
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geedsan"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - geedsan-network
 
   backend:
-    build: ./backend
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
     container_name: geedsan-backend
     restart: unless-stopped
-
     environment:
       NODE_ENV: production
       PORT: 5000
@@ -27,20 +36,46 @@ services:
       DB_NAME: geedsan_wms
       DB_USER: geedsan
       DB_PASSWORD: GeedSan@Secure2024
-
+      FRONTEND_URL: http://localhost:3000
+      JWT_SECRET: geedsan-jwt-secret-change-this-in-production-2024
+      JWT_REFRESH_SECRET: geedsan-refresh-secret-change-this-in-production-2024
+      MQTT_BROKER: mqtt://mqtt:1883
+      MQTT_CLIENT_ID: geedsan-backend
+      CHIRPSTACK_URL: http://chirpstack:8080
     ports:
       - "5000:5000"
-
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    networks:
+      - geedsan-network
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/reports:/app/reports
+      - ./backend/logs:/app/logs
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:5000
     container_name: geedsan-frontend
     restart: unless-stopped
-
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: http://localhost:5000
     ports:
       - "3000:3000"
-
     depends_on:
       - backend
+    networks:
+      - geedsan-network
+
+volumes:
+  postgres_data:
+
+networks:
+  geedsan-network:
+    driver: bridge
+    

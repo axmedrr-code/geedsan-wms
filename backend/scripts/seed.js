@@ -5,9 +5,9 @@ require('dotenv').config({ path: `${__dirname}/../.env` });
 const pool = new Pool({ host: process.env.DB_HOST||'localhost', port: parseInt(process.env.DB_PORT)||5432, database: process.env.DB_NAME||'geedsan_wms', user: process.env.DB_USER||'postgres', password: process.env.DB_PASSWORD });
 
 const users = [
-  { username:'admin',     email:'admin@geedsan.com',    password:'Admin@Geedsan2024', full_name:'System Administrator', role:'admin' },
-  { username:'operator1', email:'operator@geedsan.com', password:'Operator@2024',     full_name:'Field Operator',       role:'operator' },
-  { username:'viewer1',   email:'viewer@geedsan.com',   password:'Viewer@2024',       full_name:'Report Viewer',        role:'viewer' }
+  { username:'admin',     email:'admin@nuwaco.com',    password:'Admin@Nuwaco2024', full_name:'System Administrator', role:'admin' },
+  { username:'operator1', email:'operator@nuwaco.com', password:'Operator@2024',     full_name:'Field Operator',       role:'operator' },
+  { username:'viewer1',   email:'viewer@nuwaco.com',   password:'Viewer@2024',       full_name:'Report Viewer',        role:'viewer' }
 ];
 
 (async () => {
