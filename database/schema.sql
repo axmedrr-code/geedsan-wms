@@ -195,6 +195,59 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 
 -- ============================================================
+-- BILLING / INVOICES
+-- ============================================================
+CREATE TABLE IF NOT EXISTS invoices (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+  invoice_number VARCHAR(80) UNIQUE NOT NULL,
+  issue_date DATE NOT NULL,
+  due_date DATE NOT NULL,
+  tariff_type VARCHAR(30) DEFAULT 'residential' CHECK (tariff_type IN ('residential','commercial','industrial','government')),
+  total_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+  status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending','paid','overdue','cancelled')),
+  notes TEXT,
+  created_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS invoice_items (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+  description TEXT NOT NULL,
+  quantity NUMERIC(10,2) NOT NULL DEFAULT 1,
+  unit_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+  line_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
+CREATE INDEX IF NOT EXISTS idx_invoices_due_date ON invoices(due_date);
+
+-- ============================================================
+-- TANKER DELIVERY MANAGEMENT
+-- ============================================================
+CREATE TABLE IF NOT EXISTS tanker_deliveries (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+  vehicle_number VARCHAR(50) NOT NULL,
+  driver_name VARCHAR(100) NOT NULL,
+  scheduled_at TIMESTAMPTZ NOT NULL,
+  delivery_volume NUMERIC(12,3) NOT NULL,
+  delivery_address TEXT,
+  status VARCHAR(20) DEFAULT 'scheduled' CHECK (status IN ('scheduled','in_progress','completed','cancelled')),
+  notes TEXT,
+  created_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tanker_customer ON tanker_deliveries(customer_id);
+CREATE INDEX IF NOT EXISTS idx_tanker_status ON tanker_deliveries(status);
+CREATE INDEX IF NOT EXISTS idx_tanker_scheduled ON tanker_deliveries(scheduled_at DESC);
+
+-- ============================================================
 -- SYSTEM SETTINGS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS system_settings (

@@ -71,6 +71,20 @@ export const customersAPI = {
   update: (id, d) => api.put(`/customers/${id}`, d)
 };
 
+export const billingAPI = {
+  list: (p) => api.get('/billing', { params: p }),
+  get: (id) => api.get(`/billing/${id}`),
+  create: (d) => api.post('/billing', d),
+  update: (id, d) => api.put(`/billing/${id}`, d)
+};
+
+export const tankerAPI = {
+  list: (p) => api.get('/tanker', { params: p }),
+  get: (id) => api.get(`/tanker/${id}`),
+  create: (d) => api.post('/tanker', d),
+  update: (id, d) => api.put(`/tanker/${id}`, d)
+};
+
 export const alarmsAPI = {
   list: (p) => api.get('/alarms', { params: p }),
   acknowledge: (id) => api.post(`/alarms/${id}/acknowledge`),

@@ -44,6 +44,8 @@ app.use('/api/webhook', require('./routes/webhook'));
 app.use('/api/ai', require('./routes/ai'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/settings', require('./routes/settings'));
+app.use('/api/billing', require('./routes/billing'));
+app.use('/api/tanker', require('./routes/tanker'));
 
 // Health check
 app.get('/health', async (req, res) => {

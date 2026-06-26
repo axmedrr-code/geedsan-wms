@@ -17,6 +17,8 @@ const NAV = [
   { href: '/dashboard/customers',     icon: Users,           label: 'Customers',      roles: ['admin','operator','viewer'] },
   { href: '/dashboard/reports',       icon: FileBarChart,    label: 'Reports',        roles: ['admin','operator','viewer'] },
   { href: '/dashboard/ai',            icon: Brain,           label: 'AI Analytics',   roles: ['admin','operator','viewer'] },
+  { href: '/dashboard/billing',       icon: FileBarChart,    label: 'Billing',        roles: ['admin','operator'] },
+  { href: '/dashboard/tanker',        icon: Droplets,        label: 'Deliveries',     roles: ['admin','operator'] },
   { href: '/dashboard/notifications', icon: Bell,            label: 'Notifications',  roles: ['admin','operator'] },
   { href: '/dashboard/users',         icon: Shield,          label: 'Users',          roles: ['admin'] },
   { href: '/dashboard/settings',      icon: Settings,        label: 'Settings',       roles: ['admin'] },
