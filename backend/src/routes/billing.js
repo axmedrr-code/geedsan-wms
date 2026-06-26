@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { query } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
+const { recordPayment } = require('../services/billingService');
 
 router.get('/', authenticate, authorize('admin','operator'), async (req, res) => {
   try {
@@ -51,6 +52,16 @@ router.post('/', authenticate, authorize('admin','operator'), async (req, res) =
       await query('INSERT INTO invoice_items (invoice_id,description,quantity,unit_price,line_order) VALUES ($1,$2,$3,$4,$5)', [invoiceId, item.description, item.quantity, item.unit_price, i]);
     }
 
+    await query('INSERT INTO audit_log (user_id, action, entity_type, entity_id, new_values, ip_address, user_agent) VALUES ($1,$2,$3,$4,$5,$6,$7)', [
+      req.user.id,
+      'create_invoice',
+      'invoice',
+      invoiceId,
+      JSON.stringify({ customer_id, invoice_number, issue_date, due_date, tariff_type, total_amount, status, notes }),
+      req.ip,
+      req.headers['user-agent'] || null
+    ]);
+
     res.status(201).json({ invoice: r.rows[0] });
   } catch (err) {
     console.error(err);
@@ -67,6 +78,18 @@ router.put('/:id', authenticate, authorize('admin','operator'), async (req, res)
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to update invoice' });
+  }
+});
+
+router.post('/:id/payment', authenticate, authorize('admin','operator'), async (req, res) => {
+  try {
+    const { amount, method, reference, note } = req.body;
+    if (!amount || amount <= 0) return res.status(400).json({ error: 'Payment amount must be positive' });
+    const payment = await recordPayment(req.params.id, amount, method || 'cash', reference, note, req.user.id);
+    res.json(payment);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Failed to record payment' });
   }
 });
 

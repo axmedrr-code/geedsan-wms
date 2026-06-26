@@ -30,14 +30,7 @@ EXPOSE 3000
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)}).on('error', (e) => {throw e})" || exit 1
+  CMD node -e "require('http').get('http://localhost:3000', (r) => { if (r.statusCode !== 200) throw new Error('status:' + r.statusCode); }).on('error', (e) => { throw e; })" || exit 1
 
 USER nextjs
-
-CMD ["node", "server.js"]
-
-EXPOSE 3000
-
-HEALTHCHECK --interval=30s --timeout=10s CMD wget -qO- http://localhost:3000 || exit 1
-
 CMD ["node", "server.js"]

@@ -35,6 +35,7 @@ app.use('/reports', express.static(REPORTS_DIR));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/customers', require('./routes/customers'));
+app.use('/api/products', require('./routes/products'));
 app.use('/api/meters', require('./routes/meters'));
 app.use('/api/alarms', require('./routes/alarms'));
 app.use('/api/downlinks', require('./routes/downlinks'));
@@ -45,7 +46,10 @@ app.use('/api/ai', require('./routes/ai'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/billing', require('./routes/billing'));
+app.use('/api/billing-cycles', require('./routes/billingCycles'));
 app.use('/api/tanker', require('./routes/tanker'));
+app.use('/api/realtime', require('./routes/realtime'));
+app.use('/api/odoo', require('./routes/odoo'));
 
 // Health check
 app.get('/health', async (req, res) => {

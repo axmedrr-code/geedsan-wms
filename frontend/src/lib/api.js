@@ -75,7 +75,16 @@ export const billingAPI = {
   list: (p) => api.get('/billing', { params: p }),
   get: (id) => api.get(`/billing/${id}`),
   create: (d) => api.post('/billing', d),
-  update: (id, d) => api.put(`/billing/${id}`, d)
+  update: (id, d) => api.put(`/billing/${id}`, d),
+  recordPayment: (id, d) => api.post(`/billing/${id}/payment`, d)
+};
+
+export const billingCyclesAPI = {
+  list: (p) => api.get('/billing-cycles', { params: p }),
+  get: (id) => api.get(`/billing-cycles/${id}`),
+  create: (d) => api.post('/billing-cycles', d),
+  postInvoice: (id, d) => api.post(`/billing-cycles/${id}/invoice`, d),
+  recordPayment: (id, d) => api.post(`/billing-cycles/${id}/payment`, d)
 };
 
 export const tankerAPI = {

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS customers (
   district VARCHAR(100),
   tariff_type VARCHAR(30) DEFAULT 'residential' CHECK (tariff_type IN ('residential','commercial','industrial','government')),
   account_status VARCHAR(20) DEFAULT 'active' CHECK (account_status IN ('active','suspended','terminated')),
+  odoo_id VARCHAR(100),
   notes TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -203,6 +204,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   invoice_number VARCHAR(80) UNIQUE NOT NULL,
   issue_date DATE NOT NULL,
   due_date DATE NOT NULL,
+  odoo_id VARCHAR(100),
   tariff_type VARCHAR(30) DEFAULT 'residential' CHECK (tariff_type IN ('residential','commercial','industrial','government')),
   total_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
   status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending','paid','overdue','cancelled')),
@@ -215,11 +217,77 @@ CREATE TABLE IF NOT EXISTS invoices (
 CREATE TABLE IF NOT EXISTS invoice_items (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+  product_id UUID REFERENCES products(id),
   description TEXT NOT NULL,
   quantity NUMERIC(10,2) NOT NULL DEFAULT 1,
   unit_price NUMERIC(12,2) NOT NULL DEFAULT 0,
   line_order INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS invoice_payments (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+  amount NUMERIC(14,2) NOT NULL,
+  payment_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  method VARCHAR(50) DEFAULT 'cash',
+  reference VARCHAR(100),
+  note TEXT,
+  created_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS billing_cycles (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+  cycle_type VARCHAR(20) DEFAULT 'monthly' CHECK (cycle_type IN ('monthly','quarterly','annual','custom')),
+  period_start DATE NOT NULL,
+  period_end DATE NOT NULL,
+  due_date DATE NOT NULL,
+  status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending','posted','paid','overdue','cancelled')),
+  invoice_id UUID REFERENCES invoices(id) ON DELETE SET NULL,
+  amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+  notes TEXT,
+  created_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoice_payments_invoice ON invoice_payments(invoice_id);
+CREATE INDEX IF NOT EXISTS idx_billing_cycles_customer ON billing_cycles(customer_id);
+CREATE INDEX IF NOT EXISTS idx_billing_cycles_status ON billing_cycles(status);
+
+CREATE TABLE IF NOT EXISTS products (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  product_code VARCHAR(80) UNIQUE NOT NULL,
+  name VARCHAR(150) NOT NULL,
+  description TEXT,
+  unit VARCHAR(20) DEFAULT 'unit',
+  unit_price NUMERIC(14,2) NOT NULL DEFAULT 0,
+  status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active','inactive')),
+  odoo_id VARCHAR(100),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_products_code ON products(product_code);
+CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
+
+CREATE TABLE IF NOT EXISTS odoo_sync_queue (
+  id BIGSERIAL PRIMARY KEY,
+  entity_type VARCHAR(20) NOT NULL CHECK (entity_type IN ('customer','product','invoice')),
+  entity_id UUID NOT NULL,
+  payload JSONB,
+  status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending','processing','retry','failed','completed')),
+  attempts INTEGER DEFAULT 0,
+  last_error TEXT,
+  next_attempt_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(entity_type, entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_odoo_sync_status ON odoo_sync_queue(status);
+CREATE INDEX IF NOT EXISTS idx_odoo_sync_next_attempt ON odoo_sync_queue(next_attempt_at);
 
 CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
