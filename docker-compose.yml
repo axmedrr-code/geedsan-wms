@@ -1,4 +1,5 @@
 services:
+
   postgres:
     image: postgres:16-alpine
     container_name: geedsan-postgres
@@ -9,21 +10,16 @@ services:
       POSTGRES_PASSWORD: GeedSan@Secure2024
     ports:
       - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    networks:
+      - geedsan-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U geedsan"]
+      test: ["CMD-SHELL", "pg_isready -U geedsan -d geedsan_wms"]
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - geedsan-network
 
   backend:
-    build: 
-      context: ./backend
-      dockerfile: Dockerfile
+    build: ./backend
     container_name: geedsan-backend
     restart: unless-stopped
     environment:
@@ -34,27 +30,13 @@ services:
       DB_NAME: geedsan_wms
       DB_USER: geedsan
       DB_PASSWORD: GeedSan@Secure2024
-      FRONTEND_URL: http://localhost:3000
-      JWT_SECRET: geedsan-jwt-secret-change-this-in-production-2024
-      JWT_REFRESH_SECRET: geedsan-refresh-secret-change-this-in-production-2024
-      MQTT_BROKER: mqtt://mqtt:1883
-      MQTT_CLIENT_ID: geedsan-backend
-      CHIRPSTACK_URL: http://chirpstack:8080
-      ODOO_API_BASE_URL: http://odoo:8069
-      ODOO_API_KEY: your-odoo-api-key
     ports:
       - "5000:5000"
     depends_on:
       postgres:
         condition: service_healthy
-      odoo:
-        condition: service_healthy
     networks:
       - geedsan-network
-    volumes:
-      - ./backend/uploads:/app/uploads
-      - ./backend/reports:/app/reports
-      - ./backend/logs:/app/logs
 
   frontend:
     build:
@@ -70,8 +52,7 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      backend:
-        condition: service_healthy
+      - backend
     networks:
       - geedsan-network
 
@@ -98,28 +79,6 @@ services:
     networks:
       - geedsan-network
 
-  nginx:
-    image: nginx:stable-alpine
-    container_name: geedsan-nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    depends_on:
-      backend:
-        condition: service_healthy
-      frontend:
-        condition: service_started
-    volumes:
-      - ./docker/nginx-ssl.conf:/etc/nginx/nginx.conf:ro
-      - ./docker/certs:/etc/nginx/certs:ro
-    networks:
-      - geedsan-network
-
-volumes:
-  postgres_data:
-
 networks:
   geedsan-network:
     driver: bridge
-    
