@@ -1,6 +1,7 @@
 const { query } = require('../config/database');
 const { publish } = require('./realtimeService');
 const { recordAudit } = require('./auditService');
+const { enqueueOdooSync } = require('./odooService');
 const pdf = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
@@ -119,6 +120,8 @@ const postBillingCycleInvoice = async (billingCycleId, invoiceNumber, note, user
   const pdfMeta = await createInvoicePDF(invoice, invoiceItems, customer.rows[0]);
   await recordAudit({ userId, action: 'post_invoice', entityType: 'billing_cycle', entityId: billingCycleId, newValues: { invoiceId: invoice.id, invoiceNumber: invoice.invoice_number, amount: bc.amount, dueDate: bc.due_date } });
 
+  await enqueueOdooSync('invoice', invoice.id).catch(err => console.error('Failed to enqueue Odoo invoice sync:', err.message));
+
   publish('invoice_created', { invoiceId: invoice.id, invoiceNumber: invoice.invoice_number, customerId: invoice.customer_id, pdf: pdfMeta.filename, pdf_url: `/reports/${pdfMeta.filename}` });
 
   return { ...invoice, invoice_pdf: pdfMeta.filename, pdf_url: `/reports/${pdfMeta.filename}` };
@@ -128,7 +131,8 @@ const recordPayment = async (invoiceId, amount, method, reference, note, userId)
   const invoice = await query('SELECT * FROM invoices WHERE id=$1', [invoiceId]);
   if (!invoice.rows[0]) throw new Error('Invoice not found');
 
-  await query('INSERT INTO invoice_payments (invoice_id, amount, payment_date, method, reference, note, created_by) VALUES ($1,$2,NOW(),$3,$4,$5,$6)', [invoiceId, amount, method, reference, note, userId]);
+  const paymentR = await query('INSERT INTO invoice_payments (invoice_id, amount, payment_date, method, reference, note, created_by) VALUES ($1,$2,NOW(),$3,$4,$5,$6) RETURNING id', [invoiceId, amount, method, reference, note, userId]);
+  const paymentId = paymentR.rows[0].id;
 
   const payments = await query('SELECT COALESCE(SUM(amount),0) AS total_paid FROM invoice_payments WHERE invoice_id=$1', [invoiceId]);
   const totalPaid = parseFloat(payments.rows[0].total_paid);
@@ -138,24 +142,69 @@ const recordPayment = async (invoiceId, amount, method, reference, note, userId)
 
   await query('UPDATE invoices SET status=$1, updated_at=NOW() WHERE id=$2', [newStatus, invoiceId]);
 
+  // Mirror the invoice's actual status onto its billing cycle (not a blanket
+  // "posted" fallback) — otherwise an overdue/partially-paid cycle silently
+  // shows as "posted" to anything reading billing_cycles.status directly,
+  // even though invoices.status correctly says "overdue".
   const invoiceLink = await query('SELECT invoice_id FROM billing_cycles WHERE invoice_id=$1', [invoiceId]);
   if (invoiceLink.rows.length) {
-    await query('UPDATE billing_cycles SET status=$1, updated_at=NOW() WHERE invoice_id=$2', [newStatus === 'paid' ? 'paid' : 'posted', invoiceId]);
+    await query('UPDATE billing_cycles SET status=$1, updated_at=NOW() WHERE invoice_id=$2', [newStatus, invoiceId]);
   }
 
   await recordAudit({ userId, action: 'record_payment', entityType: 'invoice', entityId: invoiceId, newValues: { amount, method, reference, note, totalPaid, status: newStatus } });
+  await enqueueOdooSync('payment', paymentId).catch(err => console.error('Failed to enqueue Odoo payment sync:', err.message));
   publish('invoice_payment', { invoiceId, totalPaid, status: newStatus, amount, method });
 
   return { invoiceId, totalPaid, newStatus };
 };
 
+// Auto-creates and posts the previous month's invoice for every active
+// customer with at least one active meter. Skips customers that already
+// have a billing cycle for that period (idempotent against re-runs/restarts).
+const runMonthlyAutoBilling = async () => {
+  const now = new Date();
+  const periodStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const periodEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+  const dueDate = new Date(periodEnd.getTime() + 14 * 24 * 60 * 60 * 1000);
+  const ym = `${periodStart.getFullYear()}${String(periodStart.getMonth() + 1).padStart(2, '0')}`;
+
+  const customers = await query(
+    `SELECT DISTINCT c.id, c.customer_number FROM customers c
+     JOIN meters m ON m.customer_id = c.id
+     WHERE c.account_status='active' AND m.status='active'`
+  );
+
+  let created = 0;
+  for (const customer of customers.rows) {
+    const existing = await query(
+      `SELECT id FROM billing_cycles WHERE customer_id=$1 AND period_start=$2 AND period_end=$3`,
+      [customer.id, periodStart, periodEnd]
+    );
+    if (existing.rows.length) continue;
+
+    try {
+      const cycle = await createBillingCycleForCustomer(customer.id, 'monthly', periodStart, periodEnd, dueDate, null, 'Auto-generated monthly billing');
+      const invoiceNumber = `INV-${ym}-${customer.customer_number}`;
+      await postBillingCycleInvoice(cycle.id, invoiceNumber, 'Auto-generated invoice', null);
+      created += 1;
+    } catch (err) {
+      console.error(`Auto-billing failed for customer ${customer.id}:`, err.message);
+    }
+  }
+
+  return created;
+};
+
 const markOverdueInvoices = async () => {
   const r = await query(`UPDATE invoices SET status='overdue', updated_at=NOW() WHERE status='pending' AND due_date < NOW() RETURNING id, customer_id, invoice_number`);
   for (const invoice of r.rows) {
+    // Keep billing_cycles.status consistent with invoices.status (same fix
+    // as recordPayment — these had silently diverged before).
+    await query(`UPDATE billing_cycles SET status='overdue', updated_at=NOW() WHERE invoice_id=$1`, [invoice.id]);
     await recordAudit({ action: 'mark_overdue', entityType: 'invoice', entityId: invoice.id, newValues: { status: 'overdue' } });
     publish('invoice_overdue', invoice);
   }
   return r.rows.length;
 };
 
-module.exports = { calculateUsageAmount, createInvoicePDF, createBillingCycleForCustomer, postBillingCycleInvoice, recordPayment, markOverdueInvoices };
+module.exports = { calculateUsageAmount, createInvoicePDF, createBillingCycleForCustomer, postBillingCycleInvoice, recordPayment, markOverdueInvoices, runMonthlyAutoBilling };

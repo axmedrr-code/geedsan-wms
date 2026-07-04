@@ -30,9 +30,23 @@ const getReportData = async (reportType, params) => {
   return [];
 };
 
+// Whitelist, not a blocklist: report_type/file_type get interpolated into a
+// filesystem path below (`${report_type}_${Date.now()}.${file_type}`), and
+// path.join() happily resolves "../" segments — an unvalidated report_type
+// like "../../../../tmp/evil" would let any authenticated user (this route
+// had no role check) write/read files anywhere the process has permission.
+const VALID_REPORT_TYPES = ['daily_consumption', 'weekly_consumption', 'monthly_consumption', 'customer_usage'];
+const VALID_FILE_TYPES = ['pdf', 'xlsx'];
+
 router.post('/generate', authenticate, async (req, res) => {
   try {
     const { report_type, from, to, file_type='pdf', title } = req.body;
+    if (!VALID_REPORT_TYPES.includes(report_type)) {
+      return res.status(400).json({ error: `Invalid report_type. Valid: ${VALID_REPORT_TYPES.join(', ')}` });
+    }
+    if (!VALID_FILE_TYPES.includes(file_type)) {
+      return res.status(400).json({ error: `Invalid file_type. Valid: ${VALID_FILE_TYPES.join(', ')}` });
+    }
     const data = await getReportData(report_type, { from, to });
     const reportTitle = title || `${report_type.replace(/_/g,' ').toUpperCase()} Report`;
     const filename = `${report_type}_${Date.now()}.${file_type}`;
@@ -94,7 +108,14 @@ router.post('/generate', authenticate, async (req, res) => {
 router.get('/:id/download', authenticate, async (req, res) => {
   const r = await query('SELECT * FROM reports WHERE id=$1', [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'Report not found' });
-  const filePath = path.join(REPORTS_DIR, r.rows[0].file_path);
+  const reportsDirResolved = path.resolve(REPORTS_DIR);
+  const filePath = path.resolve(REPORTS_DIR, r.rows[0].file_path);
+  // Defense in depth: even though file_path is now only ever set by the
+  // validated /generate route above, refuse to serve anything that
+  // resolves outside REPORTS_DIR regardless of how it got into the table.
+  if (!filePath.startsWith(reportsDirResolved + path.sep)) {
+    return res.status(400).json({ error: 'Invalid report file path' });
+  }
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
   res.download(filePath, `${r.rows[0].title}.${r.rows[0].file_type}`);
 });

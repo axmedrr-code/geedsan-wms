@@ -4,6 +4,14 @@ const { query } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
 const { recordPayment } = require('../services/billingService');
 
+/**
+ * @openapi
+ * /billing:
+ *   get:
+ *     summary: List invoices (filterable by customer/status)
+ *     tags: [Billing]
+ *     security: [{ bearerAuth: [] }]
+ */
 router.get('/', authenticate, authorize('admin','operator'), async (req, res) => {
   try {
     const { customer_id, status, page = 1, limit = 50 } = req.query;

@@ -10,6 +10,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts';
 import { dashboardAPI } from '../../lib/api';
+import { useRealtimeEvents } from '../../lib/useRealtimeEvents';
 import { format } from 'date-fns';
 import Link from 'next/link';
 
@@ -113,6 +114,8 @@ export default function DashboardPage() {
     queryFn: () => dashboardAPI.getTopConsumers().then(r => r.data),
     refetchInterval: 60000
   });
+
+  useRealtimeEvents([['dashboard-stats'], ['consumption-chart'], ['recent-alarms'], ['distribution'], ['top-consumers']]);
 
   const batteryData = distribution?.battery || [];
   const batteryColors = { good: '#7ED957', medium: '#f59e0b', low: '#f97316', critical: '#ef4444', unknown: '#64748b' };

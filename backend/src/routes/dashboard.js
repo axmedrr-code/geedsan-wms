@@ -3,9 +3,17 @@ const router = express.Router();
 const { query } = require('../config/database');
 const { authenticate } = require('../middleware/auth');
 
+/**
+ * @openapi
+ * /dashboard/stats:
+ *   get:
+ *     summary: Top-level dashboard counters (meters, alarms, gateways, consumption)
+ *     tags: [Dashboard]
+ *     security: [{ bearerAuth: [] }]
+ */
 router.get('/stats', authenticate, async (req, res) => {
   try {
-    const r = await query(`SELECT (SELECT COUNT(*) FROM meters WHERE status='active') AS total_meters,(SELECT COUNT(*) FROM meters WHERE is_online=true AND status='active') AS online_meters,(SELECT COUNT(*) FROM meters WHERE is_online=false AND status='active') AS offline_meters,(SELECT COALESCE(SUM(total_consumption),0) FROM meters WHERE status='active') AS total_consumption,(SELECT COUNT(*) FROM alarms WHERE status='active') AS active_alarms,(SELECT COUNT(*) FROM meters WHERE battery_voltage<3.2 AND battery_voltage IS NOT NULL AND status='active') AS low_battery_count,(SELECT COUNT(*) FROM alarms WHERE status='active' AND severity='critical') AS critical_alarms,(SELECT COUNT(*) FROM customers WHERE account_status='active') AS total_customers`);
+    const r = await query(`SELECT (SELECT COUNT(*) FROM meters WHERE status='active') AS total_meters,(SELECT COUNT(*) FROM meters WHERE is_online=true AND status='active') AS online_meters,(SELECT COUNT(*) FROM meters WHERE is_online=false AND status='active') AS offline_meters,(SELECT COALESCE(SUM(total_consumption),0) FROM meters WHERE status='active') AS total_consumption,(SELECT COUNT(*) FROM alarms WHERE status='active') AS active_alarms,(SELECT COUNT(*) FROM meters WHERE battery_voltage<3.2 AND battery_voltage IS NOT NULL AND status='active') AS low_battery_count,(SELECT COUNT(*) FROM alarms WHERE status='active' AND severity='critical') AS critical_alarms,(SELECT COUNT(*) FROM customers WHERE account_status='active') AS total_customers,(SELECT COUNT(*) FROM gateways) AS total_gateways,(SELECT COUNT(*) FROM gateways WHERE is_online=true) AS online_gateways`);
     res.json(r.rows[0]);
   } catch (err) { res.status(500).json({ error: 'Failed to fetch stats' }); }
 });

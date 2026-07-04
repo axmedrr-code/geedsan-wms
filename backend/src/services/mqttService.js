@@ -1,6 +1,8 @@
 const mqtt = require('mqtt');
 const { query } = require('../config/database');
 const logger = require('./logger');
+const { decodeMeterPayload } = require('./payloadDecoder');
+const { ingestTelemetry } = require('./telemetryService');
 
 let client = null;
 
@@ -83,78 +85,44 @@ const mqttService = {
   async handleUplinkMessage(deviceEui, data) {
     try {
       // Find meter by device EUI
-      const meterResult = await query(
-        'SELECT id FROM meters WHERE device_eui = $1',
-        [deviceEui]
-      );
+      const meterResult = await query('SELECT * FROM meters WHERE device_eui = $1', [deviceEui]);
 
       if (!meterResult.rows.length) {
         logger.warn(`⚠️  Device ${deviceEui} not found in database`);
         return;
       }
 
-      const meterId = meterResult.rows[0].id;
-      
-      // Extract payload data
+      const meter = meterResult.rows[0];
       const fPort = data.fPort || 0;
       const fCnt = data.fCnt || 0;
       const rxInfo = data.rxInfo?.[0] || {};
-      const txInfo = data.txInfo || {};
-      
-      // Decode payload (assumes ChirpStack application server decoding)
-      const objectData = data.objectJSON || data.data || {};
-      const totalConsumption = objectData.consumption || objectData.total || null;
-      const currentFlow = objectData.flow || objectData.current || null;
-      const batteryVoltage = objectData.battery || objectData.voltage || null;
 
-      // Store meter reading
-      await query(
-        `INSERT INTO meter_readings (
-          meter_id, device_eui, timestamp, total_consumption, current_flow, 
-          battery_voltage, rssi, snr, f_port, f_cnt, raw_payload, alarm_flags, created_at
-        ) VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())`,
-        [
-          meterId,
-          deviceEui,
-          totalConsumption,
-          currentFlow,
-          batteryVoltage,
-          rxInfo.rssi || null,
-          rxInfo.snr || null,
-          fPort,
-          fCnt,
-          JSON.stringify(data),
-          JSON.stringify(objectData.alarms || {})
-        ]
-      );
+      // Prefer decoding the raw payload ourselves (consistent with the webhook path).
+      // Fall back to ChirpStack's codec-decoded object if raw data isn't present.
+      const rawData = data.data || '';
+      let decoded = rawData ? decodeMeterPayload(rawData) : null;
+      if (!decoded || decoded.totalConsumption === null) {
+        const objectData = data.objectJSON || data.object || {};
+        decoded = {
+          totalConsumption: objectData.consumption ?? objectData.total ?? null,
+          currentFlow: objectData.flow ?? objectData.current ?? null,
+          batteryVoltage: objectData.battery ?? objectData.voltage ?? null,
+          pressure: objectData.pressure ?? null,
+          valveStatus: objectData.valveStatus ?? null,
+          alarmFlags: objectData.alarms || objectData.alarmFlags || {}
+        };
+      }
 
-      // Update meter with latest values
-      await query(
-        `UPDATE meters SET 
-          total_consumption = COALESCE($2, total_consumption),
-          current_flow = COALESCE($3, current_flow),
-          battery_voltage = COALESCE($4, battery_voltage),
-          rssi = $5,
-          snr = $6,
-          is_online = true,
-          last_seen = NOW(),
-          updated_at = NOW()
-        WHERE id = $1`,
-        [
-          meterId,
-          totalConsumption,
-          currentFlow,
-          batteryVoltage,
-          rxInfo.rssi || null,
-          rxInfo.snr || null
-        ]
-      );
+      await ingestTelemetry(meter, decoded, {
+        rssi: rxInfo.rssi ?? null,
+        snr: rxInfo.snr ?? null,
+        fPort,
+        fCnt,
+        rawPayload: rawData || JSON.stringify(data),
+        gatewayEui: (rxInfo.gatewayId || '').toUpperCase() || null
+      });
 
-      logger.info(`📊 Meter ${deviceEui}: consumption=${totalConsumption}m³, flow=${currentFlow}L/h`);
-
-      // Check for alarms/anomalies
-      await this.checkAlarms(meterId, deviceEui, objectData);
-
+      logger.info(`📊 Meter ${deviceEui}: consumption=${decoded.totalConsumption}m³, flow=${decoded.currentFlow}L/h`);
     } catch (err) {
       logger.error(`Error handling uplink from ${deviceEui}:`, err);
     }
@@ -207,54 +175,6 @@ const mqttService = {
     }
   },
 
-  async checkAlarms(meterId, deviceEui, data) {
-    try {
-      const alarms = [];
-
-      // Low battery alarm
-      if (data.battery && data.battery < 2.5) {
-        alarms.push({
-          type: 'low_battery',
-          severity: 'warning',
-          message: `Battery voltage low: ${data.battery}V`
-        });
-      }
-
-      // High flow alarm
-      if (data.flow && data.flow > 100) {
-        alarms.push({
-          type: 'high_flow',
-          severity: 'warning',
-          message: `High flow detected: ${data.flow}L/h`
-        });
-      }
-
-      // Meter tamper alarm
-      if (data.tamper) {
-        alarms.push({
-          type: 'meter_tamper',
-          severity: 'critical',
-          message: 'Meter tampering detected'
-        });
-      }
-
-      // Insert alarms into database
-      for (const alarm of alarms) {
-        await query(
-          `INSERT INTO alarms (meter_id, device_eui, alarm_type, severity, message, status, triggered_at)
-           VALUES ($1, $2, $3, $4, $5, 'active', NOW())`,
-          [meterId, deviceEui, alarm.type, alarm.severity, alarm.message]
-        );
-      }
-
-      if (alarms.length > 0) {
-        logger.warn(`⚠️  New alarms for ${deviceEui}: ${alarms.map(a => a.type).join(', ')}`);
-      }
-    } catch (err) {
-      logger.error('Error checking alarms:', err);
-    }
-  },
-
   async publish(topic, message) {
     if (client && client.connected) {
       return new Promise((resolve, reject) => {
@@ -271,6 +191,10 @@ const mqttService = {
       client.end();
       logger.info('MQTT disconnected');
     }
+  },
+
+  isConnected() {
+    return !!(client && client.connected);
   }
 };
 

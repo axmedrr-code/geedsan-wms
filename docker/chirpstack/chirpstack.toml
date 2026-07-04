@@ -1,0 +1,29 @@
+# Non-secret ChirpStack v4 configuration. Connection strings and the API JWT
+# secret are intentionally NOT set here — they're injected at container
+# start via CHIRPSTACK_POSTGRESQL__DSN / CHIRPSTACK_REDIS__SERVERS /
+# CHIRPSTACK_API__SECRET environment variables (see docker-compose.yml),
+# so no credentials live in a file that could get committed to git.
+
+[logging]
+level="info"
+
+[network]
+net_id="000000"
+enabled_regions=[
+  "eu868",
+]
+
+[api]
+bind="0.0.0.0:8080"
+
+[integration]
+enabled=["mqtt"]
+
+[integration.mqtt]
+event_topic="application/{{application_id}}/device/{{dev_eui}}/event/{{event}}"
+command_topic="application/{{application_id}}/device/{{dev_eui}}/command/{{command}}"
+# Static IP, not hostname: chirpstack runs with network_mode: service:postgres
+# (see docker-compose.yml) which shares postgres's network namespace but not
+# its DNS config, so "mosquitto" wouldn't resolve. 172.28.0.10 is mosquitto's
+# pinned ipv4_address on geedsan-network — stable across restarts.
+server="tcp://172.28.0.10:1883/"

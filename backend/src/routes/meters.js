@@ -3,6 +3,36 @@ const router = express.Router();
 const { query } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
 
+/**
+ * @openapi
+ * /meters:
+ *   get:
+ *     summary: List meters (paginated, filterable by status/customer/search)
+ *     tags: [Meters]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, enum: [active, inactive, faulty, removed] }
+ *       - in: query
+ *         name: customer_id
+ *         schema: { type: string }
+ *       - in: query
+ *         name: search
+ *         schema: { type: string }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 50 }
+ *     responses:
+ *       200: { description: Paginated meter list }
+ *   post:
+ *     summary: Provision a new meter
+ *     tags: [Meters]
+ *     security: [{ bearerAuth: [] }]
+ */
 router.get('/', authenticate, async (req, res) => {
   try {
     const { page=1, limit=50, status, search, customer_id } = req.query;
@@ -20,7 +50,7 @@ router.get('/', authenticate, async (req, res) => {
 
 router.get('/:id', authenticate, async (req, res) => {
   try {
-    const r=await query(`SELECT m.*,c.full_name AS customer_name,c.customer_number,c.phone AS customer_phone,c.email AS customer_email FROM meters m LEFT JOIN customers c ON m.customer_id=c.id WHERE m.id=$1 OR m.device_eui=$1`,[req.params.id]);
+    const r=await query(`SELECT m.*,c.full_name AS customer_name,c.customer_number,c.phone AS customer_phone,c.email AS customer_email FROM meters m LEFT JOIN customers c ON m.customer_id=c.id WHERE m.id::text=$1 OR m.device_eui=$1`,[req.params.id]);
     if(!r.rows[0]) return res.status(404).json({error:'Meter not found'});
     const meter=r.rows[0];
     const [readings,alarms,commands]=await Promise.all([
@@ -65,9 +95,65 @@ router.get('/:id/readings', authenticate, async (req,res) => {
     let params=[req.params.id], tf='';
     if(from){params.push(from);tf+=` AND timestamp>=$${params.length}`;}
     if(to){params.push(to);tf+=` AND timestamp<=$${params.length}`;}
-    const r=await query(`SELECT date_trunc($${params.length+1},timestamp) AS period,AVG(current_flow) AS avg_flow,MAX(total_consumption)-MIN(total_consumption) AS consumption,AVG(battery_voltage) AS battery_voltage,AVG(rssi) AS rssi,COUNT(*) AS reading_count FROM meter_readings WHERE meter_id=$1 ${tf} GROUP BY period ORDER BY period ASC LIMIT ${parseInt(limit)}`,[...params,interval]);
+    const r=await query(`SELECT date_trunc($${params.length+1},timestamp) AS period,AVG(current_flow) AS avg_flow,MAX(total_consumption)-MIN(total_consumption) AS consumption,AVG(battery_voltage) AS battery_voltage,AVG(pressure) AS pressure,AVG(rssi) AS rssi,COUNT(*) AS reading_count FROM meter_readings WHERE meter_id=$1 ${tf} GROUP BY period ORDER BY period ASC LIMIT ${parseInt(limit)}`,[...params,interval]);
     res.json(r.rows);
   } catch(err){res.status(500).json({error:'Failed to fetch readings'});}
+});
+
+// Dense historical flow records decoded from the device's T=0x22/0xA2 block
+// (a backfilled time series of pulse-count snapshots, distinct from regular
+// meter_readings which capture one point per uplink).
+router.get('/:id/flow-history', authenticate, async (req,res) => {
+  try {
+    const {from,to,limit=500}=req.query;
+    let params=[req.params.id], tf='';
+    if(from){params.push(from);tf+=` AND recorded_at>=$${params.length}`;}
+    if(to){params.push(to);tf+=` AND recorded_at<=$${params.length}`;}
+    params.push(parseInt(limit));
+    const r=await query(`SELECT recorded_at,interval_minutes,consumption_pulses FROM meter_flow_history WHERE meter_id=$1 ${tf} ORDER BY recorded_at DESC LIMIT $${params.length}`,params);
+    res.json(r.rows);
+  } catch(err){res.status(500).json({error:'Failed to fetch flow history'});}
+});
+
+/**
+ * @openapi
+ * /meters/{id}/packets:
+ *   get:
+ *     summary: Raw uplink packet history for field diagnostics (signal quality, gateway, raw payload hex)
+ *     tags: [Meters]
+ *     security: [{ bearerAuth: [] }]
+ */
+router.get('/:id/packets', authenticate, async (req,res) => {
+  try {
+    const {limit=100}=req.query;
+    const r=await query(
+      `SELECT timestamp,rssi,snr,gateway_eui,f_port,f_cnt,pulse_count,battery_voltage,pressure,status_word_1,status_word_2,trigger_source,raw_payload
+       FROM meter_readings WHERE meter_id=$1 ORDER BY timestamp DESC LIMIT $2`,
+      [req.params.id, parseInt(limit)]
+    );
+    res.json({ data: r.rows });
+  } catch(err){res.status(500).json({error:'Failed to fetch packet history'});}
+});
+
+/**
+ * @openapi
+ * /meters/{id}/signal:
+ *   get:
+ *     summary: RSSI/SNR signal quality trend for a meter
+ *     tags: [Meters]
+ *     security: [{ bearerAuth: [] }]
+ */
+router.get('/:id/signal', authenticate, async (req,res) => {
+  try {
+    const {hours=72,limit=300}=req.query;
+    const r=await query(
+      `SELECT timestamp,rssi,snr,gateway_eui FROM meter_readings
+       WHERE meter_id=$1 AND timestamp >= NOW() - INTERVAL '1 hour' * $2 AND rssi IS NOT NULL
+       ORDER BY timestamp ASC LIMIT $3`,
+      [req.params.id, parseInt(hours), parseInt(limit)]
+    );
+    res.json({ data: r.rows });
+  } catch(err){res.status(500).json({error:'Failed to fetch signal history'});}
 });
 
 module.exports = router;

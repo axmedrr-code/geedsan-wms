@@ -1,0 +1,2 @@
+ALTER TABLE downlink_commands ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;
+ALTER TABLE downlink_commands ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;

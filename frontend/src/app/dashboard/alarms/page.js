@@ -8,9 +8,12 @@ import toast from 'react-hot-toast';
 import { useAuthStore } from '../../../store/authStore';
 
 const ALARM_LABELS = {
-  low_battery: 'Low Battery', valve_failure: 'Valve Failure',
-  magnetic_attack: 'Magnetic Attack', water_leakage: 'Water Leakage',
-  reverse_flow: 'Reverse Flow', pipe_burst: 'Pipe Burst', communication_loss: 'Comm. Loss'
+  low_battery: 'Low Battery', valve_fault: 'Valve Fault',
+  magnetic_attack: 'Magnetic Attack', battery_removed: 'Battery Removed', metering_fault: 'Metering Fault',
+  water_leakage: 'Water Leakage', reverse_flow: 'Reverse Flow', pipe_burst: 'Pipe Burst',
+  water_inlet_alarm: 'Water Inlet Alarm', water_return_alarm: 'Water Return Alarm', flow_alarm: 'Flow Alarm',
+  communication_loss: 'Comm. Loss',
+  low_pressure: 'Low Pressure', high_pressure: 'High Pressure', abnormal_consumption: 'Abnormal Consumption'
 };
 
 const SEVERITY_CLS = {

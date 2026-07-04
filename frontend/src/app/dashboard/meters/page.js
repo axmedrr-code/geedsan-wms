@@ -1,7 +1,9 @@
 'use client';
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useRouter } from 'next/navigation';
 import { metersAPI } from '../../../lib/api';
+import { useRealtimeEvents } from '../../../lib/useRealtimeEvents';
 import Link from 'next/link';
 import {
   Search, Filter, Plus, Gauge, Wifi, WifiOff,
@@ -34,6 +36,7 @@ const rssiColor = (r) => {
 };
 
 export default function MetersPage() {
+  const router = useRouter();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [page, setPage] = useState(1);
@@ -45,6 +48,8 @@ export default function MetersPage() {
     keepPreviousData: true,
     refetchInterval: 30000
   });
+
+  useRealtimeEvents([['meters']]);
 
   const meters = data?.data || [];
   const pagination = data?.pagination || {};
@@ -98,6 +103,7 @@ export default function MetersPage() {
                 <th>Status</th>
                 <th>Valve</th>
                 <th>Battery</th>
+                <th>Pressure</th>
                 <th>RSSI</th>
                 <th>Last Seen</th>
                 <th>Consumption</th>
@@ -108,21 +114,25 @@ export default function MetersPage() {
               {isLoading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i}>
-                    {Array.from({ length: 10 }).map((_, j) => (
+                    {Array.from({ length: 11 }).map((_, j) => (
                       <td key={j}><div className="h-4 bg-slate-800 rounded animate-pulse" /></td>
                     ))}
                   </tr>
                 ))
               ) : meters.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="text-center py-12 text-slate-500">
+                  <td colSpan={11} className="text-center py-12 text-slate-500">
                     <Gauge className="w-10 h-10 mx-auto mb-2 opacity-30" />
                     <p>No meters found</p>
                   </td>
                 </tr>
               ) : (
                 meters.map(meter => (
-                  <tr key={meter.id} className="cursor-pointer">
+                  <tr
+                    key={meter.id}
+                    className="cursor-pointer hover:bg-slate-800/40 transition-colors"
+                    onClick={() => router.push(`/dashboard/meters/${meter.id}`)}
+                  >
                     <td>
                       <span className="font-mono text-xs text-primary-400">
                         {meter.device_eui}
@@ -165,6 +175,11 @@ export default function MetersPage() {
                       </span>
                     </td>
                     <td>
+                      <span className="text-sm font-mono text-slate-300">
+                        {meter.pressure ? `${meter.pressure} kPa` : '—'}
+                      </span>
+                    </td>
+                    <td>
                       <span className={`text-sm font-mono ${rssiColor(meter.rssi)}`}>
                         {meter.rssi ? `${meter.rssi} dBm` : '—'}
                       </span>
@@ -184,12 +199,9 @@ export default function MetersPage() {
                       </span>
                     </td>
                     <td>
-                      <Link
-                        href={`/dashboard/meters/${meter.id}`}
-                        className="p-1.5 text-slate-500 hover:text-primary-400 transition-colors rounded-lg hover:bg-slate-800"
-                      >
+                      <span className="p-1.5 text-slate-500 inline-flex">
                         <ChevronRight className="w-4 h-4" />
-                      </Link>
+                      </span>
                     </td>
                   </tr>
                 ))

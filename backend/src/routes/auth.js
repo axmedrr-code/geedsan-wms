@@ -5,6 +5,23 @@ const jwt = require('jsonwebtoken');
 const { query } = require('../config/database');
 const { authenticate } = require('../middleware/auth');
 
+/**
+ * @openapi
+ * /auth/login:
+ *   post:
+ *     summary: Log in with username/email + password, returns JWT access + refresh tokens
+ *     tags: [Auth]
+ *     security: []
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [username, password]
+ *             properties:
+ *               username: { type: string }
+ *               password: { type: string }
+ */
 router.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body;

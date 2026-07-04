@@ -8,10 +8,17 @@ services:
       POSTGRES_DB: geedsan_wms
       POSTGRES_USER: geedsan
       POSTGRES_PASSWORD: GeedSan@Secure2024
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+      # 8080 belongs to chirpstack, which uses network_mode: service:postgres
+      # (see chirpstack below) — host port publishing must happen on whichever
+      # container actually owns the shared network namespace.
+      - "8080:8080"
     networks:
-      - geedsan-network
+      geedsan-network:
+        ipv4_address: 172.28.0.2
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U geedsan -d geedsan_wms"]
       interval: 10s
@@ -30,10 +37,26 @@ services:
       DB_NAME: geedsan_wms
       DB_USER: geedsan
       DB_PASSWORD: GeedSan@Secure2024
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      FRONTEND_URL: ${FRONTEND_URL}
+      ODOO_URL: ${ODOO_URL}
+      ODOO_DB: ${ODOO_DB}
+      ODOO_USERNAME: ${ODOO_USERNAME}
+      ODOO_API_KEY: ${ODOO_API_KEY}
+      ODOO_PASSWORD: ${ODOO_PASSWORD}
+      MQTT_BROKER: ${MQTT_BROKER}
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID}
+      MQTT_USERNAME: ${MQTT_USERNAME}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      CHIRPSTACK_URL: ${CHIRPSTACK_URL}
+      CHIRPSTACK_API_KEY: ${CHIRPSTACK_API_KEY}
     ports:
       - "5000:5000"
     depends_on:
       postgres:
+        condition: service_healthy
+      mosquitto:
         condition: service_healthy
     networks:
       - geedsan-network
@@ -49,6 +72,7 @@ services:
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_API_URL: http://localhost:5000
+      HOSTNAME: 0.0.0.0
     ports:
       - "3000:3000"
     depends_on:
@@ -56,20 +80,50 @@ services:
     networks:
       - geedsan-network
 
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: geedsan-nginx
+    restart: unless-stopped
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Swap to nginx-ssl.conf + mount real certs at /etc/nginx/certs once
+      # you have a domain + TLS certificate (see docs/INTEGRATION_GUIDE.md).
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    networks:
+      geedsan-network:
+        ipv4_address: 172.28.0.12
+    healthcheck:
+      # Probes the pinned bridge IP, not localhost — same Docker Desktop
+      # loopback quirk documented on the chirpstack/postgres healthchecks
+      # above (host curl/external access works fine; a container's own
+      # 0.0.0.0-bound listener isn't reachable via 127.0.0.1 from inside
+      # that same container on this install).
+      test: ["CMD-SHELL", "wget -q -O- http://172.28.0.12/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   odoo:
-    image: odoo:16.0
+    image: odoo:18.0
     container_name: geedsan-odoo
     restart: unless-stopped
+    # --database and --db-filter still work in Odoo 18.
+    # $$  = literal $ in Docker Compose (prevents env-var expansion).
+    command: ["odoo", "--database=odoo", "--db-filter=^odoo$$"]
     environment:
+      # Odoo 18 Docker image reads these same env vars as 16 (entrypoint
+      # script hasn't changed).
       HOST: postgres
       PORT: 5432
       USER: geedsan
       PASSWORD: GeedSan@Secure2024
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: geedsan
-      DB_PASSWORD: GeedSan@Secure2024
-      DB_NAME: odoo
       ADMIN_PASSWORD: admin
     ports:
       - "8069:8069"
@@ -79,6 +133,108 @@ services:
     networks:
       - geedsan-network
 
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: geedsan-mosquitto
+    restart: unless-stopped
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    ports:
+      - "1883:1883"
+    networks:
+      geedsan-network:
+        ipv4_address: 172.28.0.10
+    healthcheck:
+      # Same loopback quirk as chirpstack/nginx: localhost/127.0.0.1 is not
+      # reliably reachable from inside a container on this Docker Desktop
+      # install. Using the pinned bridge IP (172.28.0.10) instead — this is
+      # the same fix applied to the other containers previously.
+      test: ["CMD-SHELL", "nc -z 172.28.0.10 1883 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: geedsan-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      geedsan-network:
+        ipv4_address: 172.28.0.11
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  chirpstack:
+    image: chirpstack/chirpstack:4
+    container_name: geedsan-chirpstack
+    restart: unless-stopped
+    command: ["-c", "/etc/chirpstack"]
+    # network_mode: service:postgres — this Docker Desktop install has a
+    # confirmed bridge-network bug where ChirpStack's Postgres connection
+    # gets ECONNREFUSED over the normal bridge/NAT path (verified: psql, nc,
+    # and our own backend/odoo all reach postgres fine over the same bridge;
+    # only chirpstack's connection attempt fails). Sharing postgres's network
+    # namespace directly bypasses the broken NAT path entirely. Because of
+    # this, chirpstack cannot declare its own `networks:`/`ports:` — port
+    # 8080 is published via postgres's `ports:` above instead. If this gets
+    # fixed upstream (Docker Desktop update/restart), this can revert to a
+    # normal `networks: [geedsan-network]` + `ports: ["8080:8080"]` block,
+    # with the DSN host changed back to `postgres`.
+    network_mode: "service:postgres"
+    # network_mode: service:X shares the network namespace but NOT the
+    # owning container's /etc/resolv.conf, so chirpstack can't resolve other
+    # services by name — and Docker rejects both `dns:` and `extra_hosts:`
+    # outright when combined with network_mode. So mosquitto/redis are
+    # addressed by their static IPs below (pinned via ipv4_address in their
+    # service definitions + the network's fixed subnet) instead of by name —
+    # stable across restarts since those IPs are explicitly assigned, not
+    # dynamically allocated by Docker.
+    volumes:
+      - ./docker/chirpstack:/etc/chirpstack:ro
+    environment:
+      CHIRPSTACK_POSTGRESQL__DSN: postgres://chirpstack:ChirpstackDb2024Secure@127.0.0.1:5432/chirpstack?sslmode=disable
+      CHIRPSTACK_REDIS__SERVERS: redis://172.28.0.11:6379/1
+      CHIRPSTACK_API__SECRET: ${CHIRPSTACK_API_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      # Probes the pinned bridge IP, not localhost: this Docker Desktop
+      # install has a confirmed loopback quirk where a container's own
+      # 0.0.0.0-bound listener isn't reachable via 127.0.0.1/localhost from
+      # inside that same container, even though it works fine externally
+      # (verified: host curl succeeds, wget to localhost from inside fails,
+      # wget to the bridge IP from inside succeeds). busybox nc in this
+      # image also lacks -z, so wget is used instead.
+      test: ["CMD-SHELL", "wget -q -O- http://172.28.0.2:8080/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
 networks:
   geedsan-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  postgres_data:
+  mosquitto_data:
+  mosquitto_log:
+  redis_data:

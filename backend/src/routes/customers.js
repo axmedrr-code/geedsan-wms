@@ -3,6 +3,18 @@ const router = express.Router();
 const { query } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
 
+/**
+ * @openapi
+ * /customers:
+ *   get:
+ *     summary: List customers
+ *     tags: [Customers]
+ *     security: [{ bearerAuth: [] }]
+ *   post:
+ *     summary: Create a customer
+ *     tags: [Customers]
+ *     security: [{ bearerAuth: [] }]
+ */
 router.get('/', authenticate, async (req, res) => {
   try {
     const { search, page = 1, limit = 50 } = req.query;

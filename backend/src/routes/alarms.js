@@ -3,6 +3,26 @@ const router = express.Router();
 const { query } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
 
+/**
+ * @openapi
+ * /alarms:
+ *   get:
+ *     summary: List alarms (filterable by status/type/severity/meter)
+ *     tags: [Alarms]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, enum: [active, acknowledged, resolved] }
+ *       - in: query
+ *         name: severity
+ *         schema: { type: string, enum: [info, warning, critical] }
+ *       - in: query
+ *         name: meter_id
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Paginated alarm list }
+ */
 router.get('/', authenticate, async (req, res) => {
   try {
     const { status, alarm_type, severity, meter_id, page = 1, limit = 50 } = req.query;

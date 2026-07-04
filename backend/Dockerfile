@@ -9,6 +9,7 @@ RUN npm ci --only=production
 # Copy source
 COPY src ./src
 COPY scripts ./scripts
+COPY migrations ./migrations
 
 # Create required directories
 RUN mkdir -p /app/uploads /app/reports /app/logs

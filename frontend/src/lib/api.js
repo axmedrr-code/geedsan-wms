@@ -61,7 +61,17 @@ export const metersAPI = {
   create: (d) => api.post('/meters', d),
   update: (id, d) => api.put(`/meters/${id}`, d),
   delete: (id) => api.delete(`/meters/${id}`),
-  getReadings: (id, p) => api.get(`/meters/${id}/readings`, { params: p })
+  getReadings: (id, p) => api.get(`/meters/${id}/readings`, { params: p }),
+  getPackets: (id, p) => api.get(`/meters/${id}/packets`, { params: p }),
+  getSignal: (id, p) => api.get(`/meters/${id}/signal`, { params: p })
+};
+
+export const gatewaysAPI = {
+  list: () => api.get('/gateways'),
+  get: (id) => api.get(`/gateways/${id}`),
+  create: (d) => api.post('/gateways', d),
+  update: (id, d) => api.put(`/gateways/${id}`, d),
+  delete: (id) => api.delete(`/gateways/${id}`)
 };
 
 export const customersAPI = {
@@ -105,7 +115,9 @@ export const alarmsAPI = {
 export const downlinksAPI = {
   sendValve: (d) => api.post('/downlinks/valve', d),
   list: (p) => api.get('/downlinks', { params: p }),
-  getCommands: () => api.get('/downlinks/commands')
+  getCommands: () => api.get('/downlinks/commands'),
+  getConfigFields: () => api.get('/downlinks/config-fields'),
+  sendConfig: (d) => api.post('/downlinks/config', d)
 };
 
 export const reportsAPI = {
@@ -131,6 +143,10 @@ export const settingsAPI = {
   get: () => api.get('/settings'),
   update: (key, value) => api.put(`/settings/${key}`, { value }),
   updateMany: (settings) => api.put('/settings', { settings })
+};
+
+export const systemAPI = {
+  getHealth: () => api.get('/system/health')
 };
 
 export const usersAPI = {

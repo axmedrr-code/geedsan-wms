@@ -55,8 +55,15 @@ CREATE TABLE IF NOT EXISTS meters (
   total_consumption NUMERIC(12,3) DEFAULT 0,
   current_flow NUMERIC(8,3) DEFAULT 0,
   battery_voltage NUMERIC(4,2),
+  pressure NUMERIC(6,2),
   rssi INTEGER,
   snr NUMERIC(6,2),
+  pulse_count BIGINT,
+  pulse_constant_liters NUMERIC(8,2) DEFAULT 100,
+  meter_serial VARCHAR(20),
+  status_word_1 INTEGER,
+  status_word_2 INTEGER,
+  trigger_source INTEGER,
   latitude NUMERIC(10,7),
   longitude NUMERIC(10,7),
   installation_address TEXT,
@@ -84,18 +91,60 @@ CREATE TABLE IF NOT EXISTS meter_readings (
   total_consumption NUMERIC(12,3),
   current_flow NUMERIC(8,3),
   battery_voltage NUMERIC(4,2),
+  pressure NUMERIC(6,2),
   rssi INTEGER,
   snr NUMERIC(6,2),
+  pulse_count BIGINT,
+  status_word_1 INTEGER,
+  status_word_2 INTEGER,
+  trigger_source INTEGER,
   f_port INTEGER,
   f_cnt INTEGER,
   raw_payload TEXT,
   alarm_flags JSONB DEFAULT '{}',
+  gateway_eui VARCHAR(16),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_readings_meter_time ON meter_readings(meter_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_readings_timestamp ON meter_readings(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_readings_eui ON meter_readings(device_eui);
+CREATE INDEX IF NOT EXISTS idx_readings_gateway ON meter_readings(gateway_eui);
+
+-- ============================================================
+-- GATEWAYS (LoRaWAN concentrators, e.g. ChirpStack-managed gateways)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS gateways (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  gateway_eui VARCHAR(16) UNIQUE NOT NULL,
+  name VARCHAR(100),
+  description TEXT,
+  latitude NUMERIC(10,7),
+  longitude NUMERIC(10,7),
+  is_online BOOLEAN DEFAULT false,
+  last_seen TIMESTAMPTZ,
+  last_rssi INTEGER,
+  last_snr NUMERIC(6,2),
+  uplink_count BIGINT DEFAULT 0,
+  status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active','inactive','maintenance')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_gateways_eui ON gateways(gateway_eui);
+CREATE INDEX IF NOT EXISTS idx_gateways_online ON gateways(is_online);
+
+CREATE TABLE IF NOT EXISTS meter_flow_history (
+  id BIGSERIAL PRIMARY KEY,
+  meter_id UUID NOT NULL REFERENCES meters(id) ON DELETE CASCADE,
+  device_eui VARCHAR(16) NOT NULL,
+  recorded_at TIMESTAMPTZ NOT NULL,
+  interval_minutes INTEGER NOT NULL,
+  consumption_pulses BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_flow_history_meter_time ON meter_flow_history(meter_id, recorded_at DESC);
 
 -- ============================================================
 -- ALARMS
@@ -138,6 +187,8 @@ CREATE TABLE IF NOT EXISTS downlink_commands (
   status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending','sent','confirmed','failed')),
   chirpstack_id VARCHAR(100),
   error_message TEXT,
+  retry_count INTEGER DEFAULT 0,
+  next_retry_at TIMESTAMPTZ,
   sent_by UUID REFERENCES users(id),
   sent_at TIMESTAMPTZ,
   confirmed_at TIMESTAMPTZ,
@@ -231,6 +282,7 @@ CREATE TABLE IF NOT EXISTS invoice_payments (
   payment_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   method VARCHAR(50) DEFAULT 'cash',
   reference VARCHAR(100),
+  odoo_id VARCHAR(100),
   note TEXT,
   created_by UUID REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -343,8 +395,29 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 -- ============================================================
+-- BACKUP LOG (written by scripts/backup.sh after each dump)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS backup_log (
+  id BIGSERIAL PRIMARY KEY,
+  database_name VARCHAR(50) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'success' CHECK (status IN ('success','failed')),
+  file_path TEXT,
+  file_size_bytes BIGINT,
+  error_message TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_backup_log_db_time ON backup_log(database_name, created_at DESC);
+
+-- ============================================================
 -- VIEWS
 -- ============================================================
+-- Dropped first: Postgres rejects CREATE OR REPLACE VIEW if the underlying
+-- table's column order shifted (e.g. a new column inserted mid-table), since
+-- that changes the view's existing output column names/positions.
+DROP VIEW IF EXISTS meter_summary;
+DROP VIEW IF EXISTS dashboard_stats;
+
 CREATE OR REPLACE VIEW meter_summary AS
 SELECT
   m.*,
@@ -368,18 +441,8 @@ SELECT
   (SELECT COUNT(*) FROM alarms WHERE status = 'active' AND severity = 'critical') AS critical_alarms,
   (SELECT COUNT(*) FROM customers WHERE account_status = 'active') AS total_customers;
 
--- ============================================================
--- SEED: DEFAULT USERS
--- ============================================================
-INSERT INTO users (username, email, password_hash, full_name, role) VALUES
-  ('admin',     'admin@geedsan.com',     '$2b$12$GeedsanHash1AdminPas0uRKW0U3RLG1234567890abcdefghij', 'System Administrator', 'admin'),
-  ('operator1', 'operator@geedsan.com',  '$2b$12$GeedsanHash2OperPas0uRKW0U3RLG1234567890abcdefghij', 'Field Operator',       'operator'),
-  ('viewer1',   'viewer@geedsan.com',    '$2b$12$GeedsanHash3ViewPas0uRKW0U3RLG1234567890abcdefghij', 'Report Viewer',        'viewer')
-ON CONFLICT (username) DO NOTHING;
-
--- NOTE: Passwords above are placeholders. Run this SQL to set correct hashed passwords:
--- UPDATE users SET password_hash = '$2b$12$...' WHERE username = 'admin';
--- Or run: node scripts/seed.js
+-- Default demo users are seeded by backend/src/config/seed.js at startup
+-- (needs real bcrypt hashing at runtime, not a static placeholder hash here).
 
 -- ============================================================
 -- SEED: DEFAULT SYSTEM SETTINGS
