@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { query } = require('../config/database');
 const { authenticate } = require('../middleware/auth');
+const logger = require('../services/logger');
 
 /**
  * @openapi
@@ -33,7 +34,10 @@ router.post('/login', async (req, res) => {
     const accessToken = jwt.sign({ userId: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '24h' });
     const refreshToken = jwt.sign({ userId: user.id }, process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET, { expiresIn: '7d' });
     res.json({ accessToken, refreshToken, user: { id: user.id, username: user.username, email: user.email, fullName: user.full_name, role: user.role } });
-  } catch (err) { res.status(500).json({ error: 'Login failed' }); }
+  } catch (err) {
+    logger.error('Login error', { error: err.message, stack: err.stack });
+    res.status(500).json({ error: 'Login failed' });
+  }
 });
 
 router.post('/refresh', async (req, res) => {

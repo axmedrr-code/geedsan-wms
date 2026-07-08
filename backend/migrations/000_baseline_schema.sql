@@ -262,6 +262,25 @@ CREATE TABLE IF NOT EXISTS invoices (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- products must be defined before invoice_items because invoice_items has
+-- a FK to products(id). The original file had this backwards, causing
+-- "relation products does not exist" on fresh-database installs.
+CREATE TABLE IF NOT EXISTS products (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  product_code VARCHAR(80) UNIQUE NOT NULL,
+  name VARCHAR(150) NOT NULL,
+  description TEXT,
+  unit VARCHAR(20) DEFAULT 'unit',
+  unit_price NUMERIC(14,2) NOT NULL DEFAULT 0,
+  status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active','inactive')),
+  odoo_id VARCHAR(100),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_products_code ON products(product_code);
+CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
+
 CREATE TABLE IF NOT EXISTS invoice_items (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
@@ -304,22 +323,6 @@ CREATE TABLE IF NOT EXISTS billing_cycles (
 CREATE INDEX IF NOT EXISTS idx_invoice_payments_invoice ON invoice_payments(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_billing_cycles_customer ON billing_cycles(customer_id);
 CREATE INDEX IF NOT EXISTS idx_billing_cycles_status ON billing_cycles(status);
-
-CREATE TABLE IF NOT EXISTS products (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  product_code VARCHAR(80) UNIQUE NOT NULL,
-  name VARCHAR(150) NOT NULL,
-  description TEXT,
-  unit VARCHAR(20) DEFAULT 'unit',
-  unit_price NUMERIC(14,2) NOT NULL DEFAULT 0,
-  status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active','inactive')),
-  odoo_id VARCHAR(100),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_products_code ON products(product_code);
-CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
 
 CREATE TABLE IF NOT EXISTS odoo_sync_queue (
   id BIGSERIAL PRIMARY KEY,
