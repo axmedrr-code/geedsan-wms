@@ -26,7 +26,15 @@ services:
       retries: 5
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      # Increment CACHEBUST to force Docker to re-copy all source files and
+      # rebuild the image from scratch (bypasses the layer cache). Without this,
+      # Docker Desktop on Windows sometimes reuses a stale cached image even when
+      # source files change — causing the old binary to run instead of the new one.
+      args:
+        CACHEBUST: "20260711-v4"
     container_name: geedsan-backend
     restart: unless-stopped
     environment:

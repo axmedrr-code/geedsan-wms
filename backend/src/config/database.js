@@ -13,7 +13,11 @@ let _pool = null;
 const getPool = () => {
   if (_pool) return _pool;
   _pool = new Pool({
-    host:     process.env.DB_HOST || 'postgres',
+    // Primary: DB_HOST env var (set to 172.28.0.2 in docker-compose.yml).
+    // Fallback: static IP directly — never a hostname that requires Docker DNS,
+    // because Docker Desktop's DNS resolver is unreliable on this install
+    // (same bug that broke chirpstack and mosquitto; documented in compose file).
+    host:     process.env.DB_HOST || '172.28.0.2',
     port:     parseInt(process.env.DB_PORT) || 5432,
     database: process.env.DB_NAME || 'geedsan_wms',
     user:     process.env.DB_USER || 'postgres',

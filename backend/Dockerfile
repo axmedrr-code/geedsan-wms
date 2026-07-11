@@ -2,11 +2,19 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies (cached unless package.json changes)
 COPY package*.json ./
 RUN npm ci --only=production
 
-# Copy source
+# CACHEBUST: changing this ARG in docker-compose.yml build.args forces Docker
+# to invalidate every layer below this point and re-copy all source files.
+# This is the fix for Docker Desktop / Windows where COPY src layer cache is
+# not always invalidated when source files change on the host filesystem.
+# To force a rebuild: update the CACHEBUST value in docker-compose.yml.
+ARG CACHEBUST=1
+RUN echo "Build ID: $CACHEBUST"
+
+# Copy source (cache-busted by ARG above when CACHEBUST changes)
 COPY src ./src
 COPY scripts ./scripts
 COPY migrations ./migrations
