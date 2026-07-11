@@ -127,9 +127,29 @@ const recordStartupAndNotify = async () => {
   }
 };
 
+// Retries the database connection up to maxAttempts times before giving up.
+// Handles two failure modes: (1) Docker DNS not yet ready for the service
+// name, (2) postgres container still initialising despite passing pg_isready.
+// Each attempt is logged so the ops team can see progress in `docker logs`.
+const waitForDatabase = async (maxAttempts = 10, delayMs = 3000) => {
+  const { testConnection } = require('./config/database');
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await testConnection();
+      logger.info(`✅ Database reachable (attempt ${attempt})`);
+      return;
+    } catch (err) {
+      logger.warn(`⏳ Database not ready — attempt ${attempt}/${maxAttempts}: ${err.message}`);
+      if (attempt === maxAttempts) throw new Error(`Database unreachable after ${maxAttempts} attempts: ${err.message}`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+};
+
 // Start
 const start = async () => {
   try {
+    await waitForDatabase();
     const { runMigrations } = require('./config/migrate');
     await runMigrations();
     const { seedDemoUsers } = require('./config/seed');

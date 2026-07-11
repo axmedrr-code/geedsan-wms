@@ -32,7 +32,11 @@ services:
     environment:
       NODE_ENV: production
       PORT: 5000
-      DB_HOST: postgres
+      # Static IP, not hostname — same Docker Desktop bridge DNS bug that
+      # broke chirpstack (fixed with network_mode) and mosquitto (fixed with
+      # 172.28.0.10). Postgres is always at 172.28.0.2 (ipv4_address in the
+      # postgres service below), so using the IP bypasses Docker DNS entirely.
+      DB_HOST: 172.28.0.2
       DB_PORT: 5432
       DB_NAME: geedsan_wms
       DB_USER: geedsan
