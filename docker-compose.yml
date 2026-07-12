@@ -11,7 +11,12 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # Host port 5433 (not 5432) because a native PostgreSQL 17 Windows
+      # service is installed and auto-starts on 5432 — it cannot be stopped
+      # without UAC elevation. The backend connects via the Docker bridge IP
+      # (172.28.0.2:5432) so the host-side mapping is irrelevant to it;
+      # this only affects direct host access (e.g. pgAdmin → localhost:5433).
+      - "5433:5432"
       # 8080 belongs to chirpstack, which uses network_mode: service:postgres
       # (see chirpstack below) — host port publishing must happen on whichever
       # container actually owns the shared network namespace.
@@ -71,7 +76,12 @@ services:
       mosquitto:
         condition: service_healthy
     networks:
-      - geedsan-network
+      geedsan-network:
+        # Static IP prevents the backend from accidentally stealing 172.28.0.2
+        # (postgres's address) when postgres crashes and Docker IPAM reassigns
+        # the first free IP to the backend on its next restart. Without this,
+        # postgres can't start because its reserved IP is already taken.
+        ipv4_address: 172.28.0.4
 
   frontend:
     build:
