@@ -4,6 +4,12 @@ services:
     image: postgres:16-alpine
     container_name: geedsan-postgres
     restart: unless-stopped
+    # 60 s grace period lets postgres complete its WAL checkpoint before Docker
+    # force-kills it. Without this the default 10 s often expires mid-checkpoint,
+    # leaving the data directory in an unclean state — causing the "database was
+    # not properly shut down; automatic recovery in progress" message on every
+    # restart and adding seconds to startup time.
+    stop_grace_period: 60s
     environment:
       POSTGRES_DB: geedsan_wms
       POSTGRES_USER: geedsan
@@ -29,6 +35,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      # 10 s grace before failures count — postgres is fast to start but the
+      # first WAL recovery pass can add a few seconds on a dirty shutdown.
+      start_period: 10s
 
   backend:
     build:
@@ -39,9 +48,11 @@ services:
       # Docker Desktop on Windows sometimes reuses a stale cached image even when
       # source files change — causing the old binary to run instead of the new one.
       args:
-        CACHEBUST: "20260711-v4"
+        CACHEBUST: "20260712-v1"
     container_name: geedsan-backend
     restart: unless-stopped
+    # 30 s grace lets in-flight HTTP requests complete before Node exits.
+    stop_grace_period: 30s
     environment:
       NODE_ENV: production
       PORT: 5000
@@ -82,6 +93,16 @@ services:
         # the first free IP to the backend on its next restart. Without this,
         # postgres can't start because its reserved IP is already taken.
         ipv4_address: 172.28.0.4
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:5000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)}).on('error', (e) => {throw e})\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # 120 s grace: on a slow reboot the backend waits indefinitely for
+      # postgres before starting the HTTP server, so the healthcheck will
+      # fail until postgres is up. 120 s covers typical post-reboot startup
+      # (WSL2 init ~30 s + postgres start ~10 s + migration run ~20 s).
+      start_period: 120s
 
   frontend:
     build:
@@ -100,7 +121,11 @@ services:
     depends_on:
       - backend
     networks:
-      - geedsan-network
+      geedsan-network:
+        # Static IP so nginx's upstream (server 172.28.0.5:3000) always reaches
+        # the frontend, and so the frontend can't steal IPs reserved for other
+        # services if it restarts while they are temporarily stopped.
+        ipv4_address: 172.28.0.5
 
   nginx:
     image: nginx:1.27-alpine
@@ -142,7 +167,10 @@ services:
     environment:
       # Odoo 18 Docker image reads these same env vars as 16 (entrypoint
       # script hasn't changed).
-      HOST: postgres
+      # Using static IP (not hostname 'postgres') — same Docker Desktop bridge
+      # DNS unreliability documented throughout this file. Odoo starts before
+      # Docker DNS is fully warmed up on a fresh reboot, causing ENOTFOUND.
+      HOST: 172.28.0.2
       PORT: 5432
       USER: geedsan
       PASSWORD: GeedSan@Secure2024

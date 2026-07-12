@@ -127,20 +127,20 @@ const recordStartupAndNotify = async () => {
   }
 };
 
-// Retries the database connection up to maxAttempts times before giving up.
-// Handles two failure modes: (1) Docker DNS not yet ready for the service
-// name, (2) postgres container still initialising despite passing pg_isready.
-// Each attempt is logged so the ops team can see progress in `docker logs`.
-const waitForDatabase = async (maxAttempts = 10, delayMs = 3000) => {
+// Retries the database connection indefinitely until it succeeds.
+// Never throws — the backend process stays alive waiting for postgres rather
+// than crash-looping. This covers two failure modes on reboot: (1) postgres
+// still initialising, (2) Docker network not yet fully ready.
+// 5 s between attempts; each attempt is logged for visibility in docker logs.
+const waitForDatabase = async (delayMs = 5000) => {
   const { testConnection } = require('./config/database');
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     try {
       await testConnection();
       logger.info(`✅ Database reachable (attempt ${attempt})`);
       return;
     } catch (err) {
-      logger.warn(`⏳ Database not ready — attempt ${attempt}/${maxAttempts}: ${err.message}`);
-      if (attempt === maxAttempts) throw new Error(`Database unreachable after ${maxAttempts} attempts: ${err.message}`);
+      logger.warn(`⏳ Waiting for database — attempt ${attempt}: ${err.message}`);
       await new Promise(r => setTimeout(r, delayMs));
     }
   }
