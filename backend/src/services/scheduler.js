@@ -3,6 +3,7 @@ const { checkOfflineMeters, checkOfflineGateways, checkAbnormalConsumption } = r
 const { markOverdueInvoices, runMonthlyAutoBilling } = require('./billingService');
 const { processRetryQueue } = require('./odooService');
 const { processFailedDownlinks } = require('./downlinkRetryService');
+const { runDatabaseBackup } = require('./backupService');
 const logger = require('./logger');
 
 const startScheduler = () => {
@@ -25,8 +26,8 @@ const startScheduler = () => {
 
   new CronJob('0 2 1 * *', async () => {
     logger.info('⏰ Running monthly auto-billing...');
-    const created = await runMonthlyAutoBilling();
-    logger.info(`🧾 Auto-generated ${created} invoice(s).`);
+    const result = await runMonthlyAutoBilling();
+    logger.info(`🧾 Monthly billing run ${result.runId}: ${result.ok} invoiced, ${result.skipped} skipped, ${result.failed} failed — status: ${result.status}.`);
   }, null, true);
 
   new CronJob('*/10 * * * *', async () => {
@@ -38,6 +39,18 @@ const startScheduler = () => {
   new CronJob('*/5 * * * *', async () => {
     const processed = await processFailedDownlinks();
     if (processed > 0) logger.info(`🔁 Retried ${processed} failed downlink command(s).`);
+  }, null, true);
+
+  // Daily database backup at 01:00 — runs before the overdue-invoice check (03:00)
+  // and the monthly billing run (02:00 on the 1st).
+  new CronJob('0 1 * * *', async () => {
+    logger.info('⏰ Running scheduled database backup...');
+    const result = await runDatabaseBackup('scheduled');
+    if (result.success) {
+      logger.info(`💾 Backup completed: ${result.file} (${result.size_bytes} bytes)`);
+    } else {
+      logger.error(`❌ Backup failed: ${result.error}`);
+    }
   }, null, true);
 
   logger.info('📅 Scheduler started');

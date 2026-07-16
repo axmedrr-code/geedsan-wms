@@ -63,4 +63,141 @@ const notifySystemEvent = async (eventType, subject, message) => {
   } catch (err) { console.error('System notification error:', err.message); }
 };
 
-module.exports = { sendNotification, sendEmail, sendTelegram, sendWhatsApp, notifySystemEvent };
+// ─── Billing Notifications ────────────────────────────────────────────────────
+//
+// Billing events are keyed by a pseudo-alarm type string stored in the
+// notification_settings.enabled_alarms JSONB array — the same mechanism used
+// for meter alarm types, so no schema change is required.  Callers opt in by
+// adding e.g. 'invoice_created' to their enabled_alarms setting.
+//
+// Supported eventType values: 'invoice_created' | 'payment_received' | 'invoice_overdue'
+
+const buildBillingMessage = (eventType, invoice, customer, payment) => {
+  const name    = customer ? (customer.full_name || customer.name || 'Unknown') : 'Unknown';
+  const invNo   = invoice ? (invoice.invoice_number || invoice.id) : 'N/A';
+  const dueDate = invoice ? (invoice.due_date || 'N/A') : 'N/A';
+  const total   = invoice ? Number(invoice.total_amount || 0).toFixed(2) : '0.00';
+
+  switch (eventType) {
+    case 'invoice_created':
+      return {
+        subject: `GEEDSAN: New Invoice ${invNo} for ${name}`,
+        text: `A new invoice has been created.\n\nCustomer: ${name}\nInvoice No: ${invNo}\nAmount: ${total}\nDue Date: ${dueDate}`,
+      };
+    case 'payment_received': {
+      const paid   = payment ? Number(payment.amount || 0).toFixed(2) : '0.00';
+      const method = payment ? (payment.method || payment.payment_method || 'N/A') : 'N/A';
+      const ref    = payment ? (payment.reference || payment.reference_number || '') : '';
+      return {
+        subject: `GEEDSAN: Payment Received – Invoice ${invNo}`,
+        text: `A payment has been received.\n\nCustomer: ${name}\nInvoice No: ${invNo}\nPaid: ${paid}\nMethod: ${method}${ref ? `\nReference: ${ref}` : ''}`,
+      };
+    }
+    case 'invoice_overdue':
+      return {
+        subject: `GEEDSAN: Overdue Invoice ${invNo} – ${name}`,
+        text: `An invoice is overdue.\n\nCustomer: ${name}\nInvoice No: ${invNo}\nAmount Due: ${total}\nDue Date: ${dueDate}`,
+      };
+    default:
+      return {
+        subject: `GEEDSAN: Billing Event (${eventType})`,
+        text:    `Billing event type: ${eventType}`,
+      };
+  }
+};
+
+// Shared dispatch helper — finds opted-in users, sends via each channel, logs.
+const dispatchBillingNotification = async (eventType, invoice, customer, payment = null) => {
+  try {
+    const settings = await query(
+      `SELECT ns.*, u.email
+       FROM notification_settings ns
+       JOIN users u ON ns.user_id=u.id
+       WHERE ns.is_active=true AND ns.enabled_alarms::jsonb ? $1`,
+      [eventType],
+    );
+    if (!settings.rows.length) return;
+
+    const { subject, text } = buildBillingMessage(eventType, invoice, customer, payment);
+    const htmlBody = `<p>${text.replace(/\n/g, '<br>')}</p>`;
+
+    for (const s of settings.rows) {
+      let success = false;
+      let errorMessage = null;
+      try {
+        if (s.channel === 'email')     success = await sendEmail(s.recipient, subject, htmlBody);
+        else if (s.channel === 'telegram')  success = await sendTelegram(s.recipient, text);
+        else if (s.channel === 'whatsapp')  success = await sendWhatsApp(s.recipient, text);
+      } catch (err) {
+        errorMessage = err.message;
+      }
+      await query(
+        `INSERT INTO notifications
+           (alarm_id, channel, recipient, subject, message, status, sent_at, error_message)
+         VALUES (NULL, $1, $2, $3, $4, $5, NOW(), $6)`,
+        [s.channel, s.recipient, subject, text, success ? 'sent' : 'failed', errorMessage],
+      );
+    }
+  } catch (err) {
+    console.error(`Billing notification error [${eventType}]:`, err.message);
+  }
+};
+
+/**
+ * Notify opted-in users that a new invoice was created.
+ * @param {object} invoice  — invoice row from DB (must have invoice_number, total_amount, due_date)
+ * @param {object} customer — customer row from DB (must have full_name)
+ */
+const notifyInvoiceCreated = async (invoice, customer) => {
+  return dispatchBillingNotification('invoice_created', invoice, customer, null);
+};
+
+/**
+ * Notify opted-in users that a payment was received against an invoice.
+ * @param {object} payment  — payment row from DB (amount, method, reference)
+ * @param {object} invoice  — invoice row from DB
+ * @param {object} customer — customer row from DB
+ */
+const notifyPaymentReceived = async (payment, invoice, customer) => {
+  return dispatchBillingNotification('payment_received', invoice, customer, payment);
+};
+
+/**
+ * Notify opted-in users that an invoice has become overdue.
+ * @param {object} invoice  — invoice row from DB
+ * @param {object} customer — customer row from DB
+ */
+const notifyInvoiceOverdue = async (invoice, customer) => {
+  return dispatchBillingNotification('invoice_overdue', invoice, customer, null);
+};
+
+/**
+ * Generic dispatcher — routes a billing event to the right handler.
+ * @param {'invoice_created'|'payment_received'|'invoice_overdue'} eventType
+ * @param {{ invoice, customer, payment? }} data
+ */
+const notifyBillingEvent = async (eventType, data) => {
+  const { invoice, customer, payment } = data || {};
+  switch (eventType) {
+    case 'invoice_created':
+      return notifyInvoiceCreated(invoice, customer);
+    case 'payment_received':
+      return notifyPaymentReceived(payment, invoice, customer);
+    case 'invoice_overdue':
+      return notifyInvoiceOverdue(invoice, customer);
+    default:
+      console.warn(`[notifyBillingEvent] Unknown event type: ${eventType}`);
+  }
+};
+
+module.exports = {
+  sendNotification,
+  sendEmail,
+  sendTelegram,
+  sendWhatsApp,
+  notifySystemEvent,
+  notifyInvoiceCreated,
+  notifyPaymentReceived,
+  notifyInvoiceOverdue,
+  notifyBillingEvent,
+};

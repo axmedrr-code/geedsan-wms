@@ -3,14 +3,28 @@ const logger = require('./logger');
 const { recordAudit } = require('./auditService');
 const odoo = require('./odooXmlRpcClient');
 
-const syncCustomerToOdoo = async (customerId) => {
-  const customerResult = await query('SELECT * FROM customers WHERE id=$1', [customerId]);
+// Derive a stable, non-empty Odoo ref for a customer.
+// Uses customer_number when present; falls back to a WMS-prefixed UUID slice
+// so the idempotency search in Odoo never runs against an empty string.
+const effectiveRef = (customer) => {
+  const cn = customer.customer_number;
+  return (cn && typeof cn === 'string' && cn.trim())
+    ? cn.trim()
+    : `WMS-${customer.id.slice(0, 8).toUpperCase()}`;
+};
+
+// Optional second argument accepts injected _query/_odoo for unit tests.
+// All production callers pass only customerId and rely on the defaults.
+const syncCustomerToOdoo = async (customerId, { _query = query, _odoo = odoo } = {}) => {
+  const customerResult = await _query('SELECT * FROM customers WHERE id=$1', [customerId]);
   const customer = customerResult.rows[0];
   if (!customer) throw new Error('Customer not found');
 
+  const ref = effectiveRef(customer);
+
   const payload = {
     name: customer.full_name,
-    ref: customer.customer_number,
+    ref,
     email: customer.email || false,
     phone: customer.phone || false,
     street: customer.address || false,
@@ -21,16 +35,16 @@ const syncCustomerToOdoo = async (customerId) => {
 
   let odooId = customer.odoo_id ? parseInt(customer.odoo_id, 10) : null;
   if (odooId) {
-    await odoo.execute('res.partner', 'write', [[odooId], payload]);
+    await _odoo.execute('res.partner', 'write', [[odooId], payload]);
   } else {
-    const existing = await odoo.execute('res.partner', 'search', [[['ref', '=', customer.customer_number]]]);
+    const existing = await _odoo.execute('res.partner', 'search', [[['ref', '=', ref]]]);
     if (existing.length) {
       odooId = existing[0];
-      await odoo.execute('res.partner', 'write', [[odooId], payload]);
+      await _odoo.execute('res.partner', 'write', [[odooId], payload]);
     } else {
-      odooId = await odoo.execute('res.partner', 'create', [payload]);
+      odooId = await _odoo.execute('res.partner', 'create', [payload]);
     }
-    await query('UPDATE customers SET odoo_id=$1, updated_at=NOW() WHERE id=$2', [String(odooId), customerId]);
+    await _query('UPDATE customers SET odoo_id=$1, updated_at=NOW() WHERE id=$2', [String(odooId), customerId]);
   }
 
   return { customerId, odooId, payload };
@@ -67,49 +81,60 @@ const syncProductToOdoo = async (productId) => {
   return { productId, odooId, payload };
 };
 
-const syncInvoiceToOdoo = async (invoiceId) => {
-  const invoiceR = await query('SELECT * FROM invoices WHERE id=$1', [invoiceId]);
+// Optional second argument accepts injected deps for unit tests.
+// All production callers pass only invoiceId and rely on the defaults.
+const syncInvoiceToOdoo = async (invoiceId, { _query = query, _odoo = odoo, _syncCustomer = syncCustomerToOdoo } = {}) => {
+  const invoiceR = await _query('SELECT * FROM invoices WHERE id=$1', [invoiceId]);
   const invoice = invoiceR.rows[0];
   if (!invoice) throw new Error('Invoice not found');
-  if (invoice.odoo_id) return { invoiceId, odooId: parseInt(invoice.odoo_id, 10), skipped: 'already synced' };
+  if (invoice.odoo_id) return {
+    invoiceId,
+    odooId:        parseInt(invoice.odoo_id, 10),
+    invoiceNumber: invoice.invoice_number,
+    customerId:    invoice.customer_id,
+    skipped:       'already synced',
+  };
 
-  const customerSync = await syncCustomerToOdoo(invoice.customer_id);
+  const customerSync = await _syncCustomer(invoice.customer_id);
 
-  const itemsR = await query('SELECT * FROM invoice_items WHERE invoice_id=$1 ORDER BY line_order ASC', [invoiceId]);
+  const itemsR = await _query('SELECT * FROM invoice_items WHERE invoice_id=$1 ORDER BY line_order ASC', [invoiceId]);
   const items = itemsR.rows;
   if (!items.length) throw new Error('Invoice has no line items to sync');
 
   const linePayload = items.map(item => [0, 0, {
-    name: item.description,
-    quantity: Number(item.quantity),
+    name:       item.description,
+    quantity:   Number(item.quantity),
     price_unit: Number(item.unit_price),
   }]);
 
   // Idempotency search: find any existing move with this WMS invoice number as the Odoo ref.
   // This prevents duplicate account.move records when retrying after partial failures.
-  const found = await odoo.execute('account.move', 'search_read',
+  const found = await _odoo.execute('account.move', 'search_read',
     [[['ref', '=', invoice.invoice_number], ['move_type', '=', 'out_invoice']]],
     { fields: ['id', 'state'], limit: 1 }
   );
 
   let moveId, branch;
 
+  // Base move payload — extracted so it can be included in the return value.
+  const movePayload = {
+    move_type:        'out_invoice',
+    partner_id:       customerSync.odooId,
+    invoice_date:     toOdooDate(invoice.issue_date),
+    invoice_date_due: toOdooDate(invoice.due_date),
+    ref:              invoice.invoice_number,
+    invoice_line_ids: linePayload,
+  };
+
   if (found.length === 0) {
     // Branch A: MISS — no existing move in Odoo; create a fresh draft
     branch = 'miss';
-    moveId = await odoo.execute('account.move', 'create', [{
-      move_type:        'out_invoice',
-      partner_id:       customerSync.odooId,
-      invoice_date:     toOdooDate(invoice.issue_date),
-      invoice_date_due: toOdooDate(invoice.due_date),
-      ref:              invoice.invoice_number,
-      invoice_line_ids: linePayload,
-    }]);
+    moveId = await _odoo.execute('account.move', 'create', [movePayload]);
   } else if (found[0].state === 'draft') {
     // Branch B: HIT Draft — move exists but not posted; update its fields and post
     branch = 'hit_draft';
     moveId = found[0].id;
-    await odoo.execute('account.move', 'write', [[moveId], {
+    await _odoo.execute('account.move', 'write', [[moveId], {
       partner_id:       customerSync.odooId,
       invoice_date:     toOdooDate(invoice.issue_date),
       invoice_date_due: toOdooDate(invoice.due_date),
@@ -119,15 +144,15 @@ const syncInvoiceToOdoo = async (invoiceId) => {
     // Branch C: HIT Posted — move is already confirmed in Odoo; do not touch it
     branch = 'hit_posted';
     moveId = found[0].id;
-    await query('UPDATE invoices SET odoo_id=$1, updated_at=NOW() WHERE id=$2', [String(moveId), invoiceId]);
-    return { invoiceId, odooId: moveId, branch, skipped: 'already posted in Odoo' };
+    await _query('UPDATE invoices SET odoo_id=$1, updated_at=NOW() WHERE id=$2', [String(moveId), invoiceId]);
+    return { invoiceId, odooId: moveId, invoiceNumber: invoice.invoice_number, customerId: invoice.customer_id, partnerId: customerSync.odooId, branch, skipped: 'already posted in Odoo' };
   }
 
   // Post the draft (Branches A and B).
   // On failure: odoo_id is deliberately NOT written back — the draft remains in Odoo
   // with ref set, so the next retry enters Branch B instead of creating a duplicate.
   try {
-    await odoo.execute('account.move', 'action_post', [[moveId]]);
+    await _odoo.execute('account.move', 'action_post', [[moveId]]);
   } catch (postErr) {
     throw new Error(
       `Odoo move id=${moveId} created/updated but action_post failed: ${postErr.message}. ` +
@@ -135,8 +160,8 @@ const syncInvoiceToOdoo = async (invoiceId) => {
     );
   }
 
-  await query('UPDATE invoices SET odoo_id=$1, updated_at=NOW() WHERE id=$2', [String(moveId), invoiceId]);
-  return { invoiceId, odooId: moveId, branch };
+  await _query('UPDATE invoices SET odoo_id=$1, updated_at=NOW() WHERE id=$2', [String(moveId), invoiceId]);
+  return { invoiceId, odooId: moveId, invoiceNumber: invoice.invoice_number, customerId: invoice.customer_id, partnerId: customerSync.odooId, branch, payload: movePayload };
 };
 
 const syncPaymentToOdoo = async (paymentId) => {
@@ -154,29 +179,72 @@ const syncPaymentToOdoo = async (paymentId) => {
   const customer = await query('SELECT odoo_id FROM customers WHERE id=$1', [refreshedInvoice.rows[0].customer_id]);
   const partnerId = parseInt(customer.rows[0].odoo_id, 10);
 
-  // Prefer 'bank' journal, fall back to 'cash'.
-  // Note: in Odoo 18 account.payment does not accept invoice_ids at creation;
-  // reconciliation is handled by Odoo automatically via outstanding credits.
-  let journals = await odoo.execute('account.journal', 'search', [[['type', '=', 'bank']]], { limit: 1 });
-  if (!journals.length) journals = await odoo.execute('account.journal', 'search', [[['type', '=', 'cash']]], { limit: 1 });
+  // Prefer 'cash' journal matching WMS payment method, fall back to 'bank'.
+  // Odoo 18 requires payment_method_line_id at payment creation.
+  let journalType = (payment.method === 'cash') ? 'cash' : 'bank';
+  let journals = await odoo.execute('account.journal', 'search', [[['type', '=', journalType]]], { limit: 1 });
+  if (!journals.length) {
+    journals = await odoo.execute('account.journal', 'search', [[['type', 'in', ['bank', 'cash']]]], { limit: 1 });
+  }
   if (!journals.length) throw new Error('No bank or cash journal found in Odoo');
+  const journalId = journals[0];
+
+  // Odoo 18: fetch the inbound payment method line for this journal (required field)
+  const methodLines = await odoo.execute('account.payment.method.line', 'search_read',
+    [[['journal_id', '=', journalId], ['payment_type', '=', 'inbound']]],
+    { fields: ['id'], limit: 1 }
+  );
+  if (!methodLines.length) throw new Error('No inbound payment method line found for journal ' + journalId);
 
   const payDate = payment.payment_date
     ? new Date(payment.payment_date).toISOString().slice(0, 10)
     : new Date().toISOString().slice(0, 10);
 
   const paymentOdooId = await odoo.execute('account.payment', 'create', [{
-    payment_type: 'inbound',
-    partner_type: 'customer',
-    partner_id: partnerId,
-    amount: Number(payment.amount),
-    date: payDate,
-    journal_id: journals[0],
-    ref: payment.reference || `Payment for ${invoice.invoice_number}`,
-    memo: payment.note || `WMS payment id ${paymentId}`,
+    payment_type:           'inbound',
+    partner_type:           'customer',
+    partner_id:             partnerId,
+    amount:                 Number(payment.amount),
+    date:                   payDate,
+    journal_id:             journalId,
+    payment_method_line_id: methodLines[0].id,
+    memo: payment.reference
+      ? `${payment.reference}${payment.note ? ' — ' + payment.note : ''}`
+      : (payment.note || `Payment for ${invoice.invoice_number}`),
   }]);
 
-  await odoo.execute('account.payment', 'action_post', [[paymentOdooId]]);
+  // Odoo 18: action_post succeeds but its return value (an action dict) contains None fields
+  // that the strict XML-RPC marshaler rejects.  The payment IS posted despite the fault.
+  // Verify state explicitly rather than trusting the return value.
+  try {
+    await odoo.execute('account.payment', 'action_post', [[paymentOdooId]]);
+  } catch (postErr) {
+    if (!postErr.message.includes('cannot marshal None')) throw postErr;
+    const stateR = await odoo.execute('account.payment', 'read', [[paymentOdooId], ['state']]);
+    const state = stateR[0]?.state;
+    if (!['in_process', 'posted', 'reconciled'].includes(state)) {
+      throw new Error(`action_post for payment ${paymentOdooId} failed and state is "${state}": ${postErr.message.slice(0, 200)}`);
+    }
+  }
+
+  // Reconcile the payment against the invoice's AR move line so Odoo shows payment_state='paid'.
+  // This matches exactly what the UI's "Register Payment" wizard does.
+  if (invoice.odoo_id) {
+    const invMoveId = parseInt(invoice.odoo_id, 10);
+    const invLines = await odoo.execute('account.move.line', 'search_read',
+      [[['move_id', '=', invMoveId], ['account_id.account_type', '=', 'asset_receivable'], ['reconciled', '=', false]]],
+      { fields: ['id'], limit: 1 }
+    );
+    const payLines = await odoo.execute('account.move.line', 'search_read',
+      [[['payment_id', '=', paymentOdooId], ['account_id.account_type', '=', 'asset_receivable'], ['reconciled', '=', false]]],
+      { fields: ['id'], limit: 1 }
+    );
+    if (invLines.length && payLines.length) {
+      await odoo.execute('account.move.line', 'reconcile', [[invLines[0].id, payLines[0].id]])
+        .catch(() => {}); // idempotent: silently ignore "already reconciled"
+    }
+  }
+
   await query('UPDATE invoice_payments SET odoo_id=$1 WHERE id=$2', [String(paymentOdooId), paymentId]);
 
   return { paymentId, odooId: paymentOdooId };
@@ -193,8 +261,10 @@ const toOdooDate = (v) => {
 
 // ── Meter ──────────────────────────────────────────────────────────────────
 
-const syncMeterToOdoo = async (meterId) => {
-  const meterR = await query(`
+// Optional second argument accepts injected deps for unit tests.
+// All production callers pass only meterId and rely on the defaults.
+const syncMeterToOdoo = async (meterId, { _query = query, _odoo = odoo, _syncCustomer = syncCustomerToOdoo } = {}) => {
+  const meterR = await _query(`
     SELECT m.*, c.odoo_id AS customer_odoo_id
     FROM meters m
     LEFT JOIN customers c ON c.id = m.customer_id
@@ -205,12 +275,13 @@ const syncMeterToOdoo = async (meterId) => {
   // Ensure the linked customer is in Odoo first
   let partnerId = meter.customer_odoo_id ? parseInt(meter.customer_odoo_id, 10) : null;
   if (meter.customer_id && !partnerId) {
-    const customerSync = await syncCustomerToOdoo(meter.customer_id);
+    const customerSync = await _syncCustomer(meter.customer_id);
     partnerId = customerSync.odooId;
   }
 
   const payload = {
-    name: meter.meter_number || meter.device_eui,
+    // Three-level fallback: meter_number → device_eui → UUID (Odoo requires a non-empty name)
+    name: meter.meter_number || meter.device_eui || String(meter.id),
     wms_meter_id: String(meter.id),
     device_eui: meter.device_eui || false,
     meter_serial: meter.meter_serial || false,
@@ -231,16 +302,16 @@ const syncMeterToOdoo = async (meterId) => {
 
   let odooId = meter.odoo_id ? parseInt(meter.odoo_id, 10) : null;
   if (odooId) {
-    await odoo.execute('nuwaco.meter', 'write', [[odooId], payload]);
+    await _odoo.execute('nuwaco.meter', 'write', [[odooId], payload]);
   } else {
-    const existing = await odoo.execute('nuwaco.meter', 'search', [[['wms_meter_id', '=', String(meter.id)]]]);
+    const existing = await _odoo.execute('nuwaco.meter', 'search', [[['wms_meter_id', '=', String(meter.id)]]]);
     if (existing.length) {
       odooId = existing[0];
-      await odoo.execute('nuwaco.meter', 'write', [[odooId], payload]);
+      await _odoo.execute('nuwaco.meter', 'write', [[odooId], payload]);
     } else {
-      odooId = await odoo.execute('nuwaco.meter', 'create', [payload]);
+      odooId = await _odoo.execute('nuwaco.meter', 'create', [payload]);
     }
-    await query('UPDATE meters SET odoo_id=$1, odoo_synced_at=NOW(), updated_at=NOW() WHERE id=$2', [String(odooId), meterId]);
+    await _query('UPDATE meters SET odoo_id=$1, odoo_synced_at=NOW(), updated_at=NOW() WHERE id=$2', [String(odooId), meterId]);
   }
 
   return { meterId, odooId, payload };
@@ -248,20 +319,24 @@ const syncMeterToOdoo = async (meterId) => {
 
 // ── Reading ────────────────────────────────────────────────────────────────
 
-const syncReadingToOdoo = async (readingId) => {
-  const readingR = await query(`
+// Optional second argument accepts injected deps for unit tests.
+// All production callers pass only readingId and rely on the defaults.
+const syncReadingToOdoo = async (readingId, { _query = query, _odoo = odoo, _syncMeter = syncMeterToOdoo } = {}) => {
+  const readingR = await _query(`
     SELECT r.*, m.odoo_id AS meter_odoo_id, m.id AS meter_uuid
     FROM meter_readings r
     LEFT JOIN meters m ON m.id = r.meter_id
     WHERE r.id = $1`, [readingId]);
   const reading = readingR.rows[0];
   if (!reading) throw new Error('Reading not found');
+
+  // Fast path: odoo_id already written back from a previous successful sync
   if (reading.odoo_id) return { readingId, odooId: parseInt(reading.odoo_id, 10), skipped: 'already synced' };
 
   // Ensure meter is in Odoo first
   let meterOdooId = reading.meter_odoo_id ? parseInt(reading.meter_odoo_id, 10) : null;
   if (reading.meter_uuid && !meterOdooId) {
-    const meterSync = await syncMeterToOdoo(reading.meter_uuid);
+    const meterSync = await _syncMeter(reading.meter_uuid);
     meterOdooId = meterSync.odooId;
   }
 
@@ -275,10 +350,22 @@ const syncReadingToOdoo = async (readingId) => {
     rssi: reading.rssi ? Number(reading.rssi) : false,
   };
 
-  const odooId = await odoo.execute('nuwaco.reading', 'create', [payload]);
-  await query('UPDATE meter_readings SET odoo_id=$1 WHERE id=$2', [String(odooId), readingId]);
+  // Safety-net idempotency: search Odoo by wms_reading_id before creating.
+  // Guards against the case where a previous attempt created the record in Odoo
+  // but the DB write-back (UPDATE meter_readings SET odoo_id) failed — without
+  // this search a retry would create a duplicate nuwaco.reading record.
+  const existing = await _odoo.execute('nuwaco.reading', 'search', [[['wms_reading_id', '=', Number(reading.id)]]]);
+  let odooId;
+  if (existing.length) {
+    odooId = existing[0];
+    await _query('UPDATE meter_readings SET odoo_id=$1 WHERE id=$2', [String(odooId), readingId]);
+    return { readingId, odooId, payload, recovered: true };
+  }
 
-  return { readingId, odooId };
+  odooId = await _odoo.execute('nuwaco.reading', 'create', [payload]);
+  await _query('UPDATE meter_readings SET odoo_id=$1 WHERE id=$2', [String(odooId), readingId]);
+
+  return { readingId, odooId, payload };
 };
 
 // ── Alarm ──────────────────────────────────────────────────────────────────
@@ -326,8 +413,217 @@ const syncAlarmToOdoo = async (alarmId) => {
   return { alarmId, odooId };
 };
 
+// Tariff rates — single source of truth, mirrors billingService.js
+const TARIFF_RATES = { residential: 1.2, commercial: 1.8, industrial: 2.4, government: 1.0 };
+
+// Creates an Odoo customer invoice directly from a meter reading.
+// Calculates consumption = reading.total_consumption − previous_reading.total_consumption,
+// applies the customer's tariff rate, and creates + posts an account.move.
+// Idempotency: keyed on meter_readings.odoo_invoice_id (written back on success)
+// and an Odoo-side search by ref='READING-{id}' before create (handles partial failures).
+const syncInvoiceFromReadingToOdoo = async (readingId, { _query = query, _odoo = odoo, _syncCustomer = syncCustomerToOdoo } = {}) => {
+  // 1. Reading + meter + customer in one JOIN
+  const readingR = await _query(`
+    SELECT mr.id, mr.meter_id, mr.device_eui, mr.timestamp,
+           mr.total_consumption, mr.odoo_invoice_id,
+           m.customer_id, m.meter_number,
+           c.tariff_type AS customer_tariff_type,
+           c.odoo_id     AS customer_odoo_id
+    FROM meter_readings mr
+    JOIN meters m ON m.id = mr.meter_id
+    LEFT JOIN customers c ON c.id = m.customer_id
+    WHERE mr.id = $1`,
+    [readingId]
+  );
+  const reading = readingR.rows[0];
+  if (!reading) throw new Error('Reading not found');
+  if (!reading.customer_id) throw new Error('Reading has no customer — meter is unassigned');
+
+  // 2. Fast-path idempotency: already synced
+  if (reading.odoo_invoice_id) return {
+    readingId:     Number(readingId),
+    odooInvoiceId: parseInt(reading.odoo_invoice_id, 10),
+    status:        'already_synced',
+  };
+
+  // 3. Compute consumption vs previous reading for the same meter
+  const prevR = await _query(`
+    SELECT total_consumption FROM meter_readings
+    WHERE meter_id = $1 AND timestamp < $2
+    ORDER BY timestamp DESC LIMIT 1`,
+    [reading.meter_id, reading.timestamp]
+  );
+  const current     = Number(reading.total_consumption  || 0);
+  const previous    = prevR.rows[0] ? Number(prevR.rows[0].total_consumption || 0) : 0;
+  const consumption = Number((current - previous).toFixed(3));
+
+  // 4. Validate
+  if (consumption < 0)  throw new Error(`Negative consumption (${consumption} m³) — meter may have been replaced or reset`);
+  if (consumption === 0) throw new Error('Zero consumption — no invoice needed for this reading');
+
+  // 5. Tariff
+  const tariffType = reading.customer_tariff_type || 'residential';
+  const unitPrice  = TARIFF_RATES[tariffType] || TARIFF_RATES.residential;
+  const amount     = Number((consumption * unitPrice).toFixed(2));
+
+  // 6. Customer in Odoo
+  const customerSync = await _syncCustomer(reading.customer_id);
+
+  // 7. Payload
+  const invoiceDate = new Date(reading.timestamp).toISOString().slice(0, 10);
+  const refTag      = `READING-${readingId}`;
+  const payload = {
+    move_type:        'out_invoice',
+    partner_id:       customerSync.odooId,
+    invoice_date:     invoiceDate,
+    ref:              refTag,
+    invoice_line_ids: [[0, 0, {
+      name:       `Water Consumption (${consumption.toFixed(3)} m³ × ${tariffType} rate)`,
+      quantity:   consumption,
+      price_unit: unitPrice,
+    }]],
+  };
+
+  // 8. Idempotency search in Odoo (handles retries after partial failures)
+  const found = await _odoo.execute('account.move', 'search_read',
+    [[['ref', '=', refTag], ['move_type', '=', 'out_invoice']]],
+    { fields: ['id', 'state'], limit: 1 }
+  );
+
+  let moveId, branch;
+  if (found.length === 0) {
+    branch = 'miss';
+    moveId = await _odoo.execute('account.move', 'create', [payload]);
+  } else if (found[0].state === 'draft') {
+    branch = 'hit_draft';
+    moveId = found[0].id;
+    await _odoo.execute('account.move', 'write', [[moveId], {
+      partner_id:       customerSync.odooId,
+      invoice_date:     invoiceDate,
+      invoice_line_ids: [[5, 0, 0], payload.invoice_line_ids[0]],
+    }]);
+  } else {
+    branch = 'hit_posted';
+    moveId = found[0].id;
+    await _query('UPDATE meter_readings SET odoo_invoice_id=$1 WHERE id=$2', [String(moveId), readingId]);
+    return { readingId: Number(readingId), odooInvoiceId: moveId, branch, status: 'already posted in Odoo' };
+  }
+
+  // 9. Post (on failure: odoo_invoice_id intentionally not written — retry finds draft via Branch B)
+  try {
+    await _odoo.execute('account.move', 'action_post', [[moveId]]);
+  } catch (postErr) {
+    throw new Error(`Odoo move id=${moveId} created but action_post failed: ${postErr.message}. Retry will recover via Branch B.`);
+  }
+
+  // 10. Write back
+  await _query('UPDATE meter_readings SET odoo_invoice_id=$1 WHERE id=$2', [String(moveId), readingId]);
+
+  return { readingId: Number(readingId), odooInvoiceId: moveId, branch, partnerId: customerSync.odooId, consumption, tariffType, unitPrice, amount, payload };
+};
+
+// Registers a payment against a posted Odoo account.move (invoice).
+// Takes the Odoo move ID (integer). Pays the full residual unless `amount` is
+// provided in deps (for partial payment). Uses account.payment.register wizard
+// so reconciliation is handled automatically by Odoo.
+// Idempotency: if invoice is already fully paid, returns early without touching Odoo.
+// All payment attempts are logged to odoo_payment_log for audit and re-lookup.
+const registerPaymentOnOdooMove = async (odooMoveId, { _query = query, _odoo = odoo, amount = null } = {}) => {
+  const moveIdNum = Number(odooMoveId);
+  if (!moveIdNum || isNaN(moveIdNum)) throw new Error('Invalid Odoo move ID');
+
+  // 1. Read move header from Odoo
+  const moves = await _odoo.execute('account.move', 'read', [[moveIdNum]], {
+    fields: ['id', 'name', 'ref', 'state', 'payment_state', 'amount_total', 'amount_residual', 'partner_id'],
+  });
+  if (!moves || !moves.length) throw new Error(`Odoo move id=${moveIdNum} not found`);
+  const move = moves[0];
+  if (move.state !== 'posted') throw new Error(`Invoice ${moveIdNum} has state "${move.state}" — only posted invoices can be paid`);
+
+  // 2. Idempotency fast path: invoice already fully paid
+  if (move.payment_state === 'paid') return {
+    odooMoveId:     moveIdNum,
+    invoiceName:    move.name,
+    paymentStateBefore: move.payment_state,
+    paymentStateAfter:  move.payment_state,
+    amountTotal:    Number(move.amount_total),
+    amountResidual: Number(move.amount_residual),
+    status:         'already_paid',
+  };
+
+  // 3. Journal: bank preferred, cash fallback
+  let journals = await _odoo.execute('account.journal', 'search_read',
+    [[['type', '=', 'bank']]],
+    { fields: ['id', 'name'], limit: 1 }
+  );
+  if (!journals.length) {
+    journals = await _odoo.execute('account.journal', 'search_read',
+      [[['type', '=', 'cash']]],
+      { fields: ['id', 'name'], limit: 1 }
+    );
+  }
+  if (!journals.length) throw new Error('No bank or cash journal found in Odoo');
+  const journal = journals[0];
+
+  // 4. Payment amount: caller-supplied (partial) or full residual
+  const amountResidual = Number(move.amount_residual);
+  const paymentAmount  = (amount && Number(amount) > 0 && Number(amount) <= amountResidual)
+    ? Number(Number(amount).toFixed(2))
+    : amountResidual;
+
+  // 5. Register payment via wizard — context sets the target invoice for reconciliation
+  const paymentDate = new Date().toISOString().slice(0, 10);
+  const ctx = { active_model: 'account.move', active_ids: [moveIdNum], active_id: moveIdNum };
+
+  const wizardId = await _odoo.execute('account.payment.register', 'create',
+    [{ payment_date: paymentDate, amount: paymentAmount, journal_id: journal.id }],
+    { context: ctx }
+  );
+  await _odoo.execute('account.payment.register', 'action_create_payments', [[wizardId]], { context: ctx });
+
+  // 6. Read updated move state
+  const updated = await _odoo.execute('account.move', 'read', [[moveIdNum]], {
+    fields: ['payment_state', 'amount_residual'],
+  });
+  const updatedMove = updated[0];
+
+  // 7. Find the Odoo payment ID (reconciled with this invoice)
+  let odooPaymentId = null;
+  try {
+    const payments = await _odoo.execute('account.payment', 'search_read',
+      [[['reconciled_invoice_ids', 'in', [moveIdNum]]]],
+      { fields: ['id', 'name', 'amount', 'date', 'state'], order: 'id desc', limit: 1 }
+    );
+    if (payments.length) odooPaymentId = payments[0].id;
+  } catch (_) {}
+
+  // 8. Log to DB
+  await _query(
+    `INSERT INTO odoo_payment_log (odoo_move_id, odoo_payment_id, amount, payment_date, payment_status, journal_name)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [moveIdNum, odooPaymentId, paymentAmount, paymentDate, updatedMove.payment_state, journal.name]
+  );
+
+  return {
+    odooMoveId:          moveIdNum,
+    odooPaymentId,
+    invoiceName:         move.name,
+    amount:              paymentAmount,
+    paymentDate,
+    journalId:           journal.id,
+    journalName:         journal.name,
+    partnerId:           Array.isArray(move.partner_id) ? move.partner_id[0] : Number(move.partner_id),
+    partnerName:         Array.isArray(move.partner_id) ? move.partner_id[1] : null,
+    paymentStateBefore:  move.payment_state,
+    paymentStateAfter:   updatedMove.payment_state,
+    amountTotal:         Number(move.amount_total),
+    amountResidualAfter: Number(updatedMove.amount_residual),
+    isPartial:           paymentAmount < amountResidual,
+  };
+};
+
 const enqueueOdooSync = async (entityType, entityId) => {
-  const validTypes = ['customer', 'product', 'invoice', 'payment', 'meter', 'reading', 'alarm'];
+  const validTypes = ['customer', 'product', 'invoice', 'payment', 'meter', 'reading', 'alarm', 'reading-invoice', 'register-payment'];
   if (!validTypes.includes(entityType)) throw new Error('Invalid Odoo entity type');
 
   const result = await query(
@@ -342,13 +638,15 @@ const enqueueOdooSync = async (entityType, entityId) => {
 };
 
 const SYNC_HANDLERS = {
-  customer: syncCustomerToOdoo,
-  product:  syncProductToOdoo,
-  invoice:  syncInvoiceToOdoo,
-  payment:  syncPaymentToOdoo,
-  meter:    syncMeterToOdoo,
-  reading:  syncReadingToOdoo,
-  alarm:    syncAlarmToOdoo,
+  customer:           syncCustomerToOdoo,
+  product:            syncProductToOdoo,
+  invoice:            syncInvoiceToOdoo,
+  payment:            syncPaymentToOdoo,
+  meter:              syncMeterToOdoo,
+  reading:            syncReadingToOdoo,
+  alarm:              syncAlarmToOdoo,
+  'reading-invoice':  syncInvoiceFromReadingToOdoo,
+  'register-payment': registerPaymentOnOdooMove,
 };
 
 const processRetryQueue = async () => {
@@ -401,6 +699,7 @@ const getOdooStatus = async () => {
 };
 
 module.exports = {
+  effectiveRef,
   syncCustomerToOdoo,
   syncProductToOdoo,
   syncInvoiceToOdoo,
@@ -408,6 +707,8 @@ module.exports = {
   syncMeterToOdoo,
   syncReadingToOdoo,
   syncAlarmToOdoo,
+  syncInvoiceFromReadingToOdoo,
+  registerPaymentOnOdooMove,
   enqueueOdooSync,
   processRetryQueue,
   getOdooQueue,

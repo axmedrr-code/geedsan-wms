@@ -52,7 +52,11 @@ export const dashboardAPI = {
   getAlarmSummary: () => api.get('/dashboard/alarm-summary'),
   getRecentAlarms: () => api.get('/dashboard/recent-alarms'),
   getDistribution: () => api.get('/dashboard/meter-distribution'),
-  getTopConsumers: () => api.get('/dashboard/top-consumers')
+  getTopConsumers: () => api.get('/dashboard/top-consumers'),
+  // Extended billing/revenue endpoints
+  getBillingStats: () => api.get('/dashboard/billing-stats'),
+  getRevenueChart: (p) => api.get('/dashboard/revenue-chart', { params: p }),
+  getTopCustomers: () => api.get('/dashboard/top-customers'),
 };
 
 export const metersAPI = {
@@ -75,18 +79,33 @@ export const gatewaysAPI = {
 };
 
 export const customersAPI = {
-  list: (p) => api.get('/customers', { params: p }),
-  get: (id) => api.get(`/customers/${id}`),
-  create: (d) => api.post('/customers', d),
-  update: (id, d) => api.put(`/customers/${id}`, d)
+  list:       (p)      => api.get('/customers', { params: p }),
+  get:        (id)     => api.get(`/customers/${id}`),
+  create:     (d)      => api.post('/customers', d),
+  update:     (id, d)  => api.put(`/customers/${id}`, d),
+  delete:     (id)     => api.delete(`/customers/${id}`),
+  getNotes:   (id)     => api.get(`/customers/${id}/notes`),
+  addNote:    (id, d)  => api.post(`/customers/${id}/notes`, d),
+  getActivity:(id)     => api.get(`/customers/${id}/activity`),
 };
 
 export const billingAPI = {
-  list: (p) => api.get('/billing', { params: p }),
-  get: (id) => api.get(`/billing/${id}`),
-  create: (d) => api.post('/billing', d),
-  update: (id, d) => api.put(`/billing/${id}`, d),
-  recordPayment: (id, d) => api.post(`/billing/${id}/payment`, d)
+  list:          (p)      => api.get('/billing', { params: p }),
+  get:           (id)     => api.get(`/billing/${id}`),
+  create:        (d)      => api.post('/billing', d),
+  update:        (id, d)  => api.put(`/billing/${id}`, d),
+  recordPayment: (id, d)  => api.post(`/billing/${id}/payment`, d),
+  getPayments:   (id)     => api.get(`/billing/${id}/payments`),
+  // Billing Center
+  getSettings:    ()      => api.get('/billing/settings'),
+  updateSettings: (d)     => api.put('/billing/settings', d),
+  validate:       (p)     => api.get('/billing/validate', { params: p }),
+  preview:        (p)     => api.get('/billing/preview', { params: p }),
+  run:            (d)     => api.post('/billing/run', d),
+  listRuns:       (p)     => api.get('/billing/runs', { params: p }),
+  getRun:         (id)    => api.get(`/billing/runs/${id}`),
+  cancelRun:      (id, d) => api.post(`/billing/runs/${id}/cancel`, d),
+  postRun:        (id)    => api.post(`/billing/runs/${id}/post`),
 };
 
 export const billingCyclesAPI = {
@@ -123,7 +142,10 @@ export const downlinksAPI = {
 export const reportsAPI = {
   list: () => api.get('/reports'),
   generate: (d) => api.post('/reports/generate', d),
-  download: (id) => api.get(`/reports/${id}/download`, { responseType: 'blob' })
+  download: (id) => api.get(`/reports/${id}/download`, { responseType: 'blob' }),
+  // Extended reports endpoints
+  getSummary: () => api.get('/reports/summary'),
+  getData: (p) => api.get('/reports/data', { params: p }),
 };
 
 export const aiAPI = {
@@ -140,9 +162,23 @@ export const notificationsAPI = {
 };
 
 export const settingsAPI = {
-  get: () => api.get('/settings'),
-  update: (key, value) => api.put(`/settings/${key}`, { value }),
-  updateMany: (settings) => api.put('/settings', { settings })
+  get:           ()       => api.get('/settings'),
+  update:        (k, v)   => api.put(`/settings/${k}`, { value: v }),
+  updateMany:    (s)      => api.put('/settings', { settings: s }),
+  getBilling:    ()       => api.get('/settings/billing'),
+  updateBilling: (d)      => api.put('/settings/billing', d),
+  getSystemInfo: ()       => api.get('/settings/system-info'),
+  getRolePerms:  ()       => api.get('/settings/role-permissions'),
+  testEmail:     ()       => api.post('/settings/test/email'),
+  testChirpStack:()       => api.post('/settings/test/chirpstack'),
+  testOdoo:      ()       => api.post('/settings/test/odoo'),
+  triggerBackup: ()       => api.post('/settings/backup'),
+};
+
+export const odooAPI = {
+  getStatus:    () => api.get('/odoo/status'),
+  getQueue:     () => api.get('/odoo/queue'),
+  processQueue: () => api.post('/odoo/process-queue'),
 };
 
 export const systemAPI = {

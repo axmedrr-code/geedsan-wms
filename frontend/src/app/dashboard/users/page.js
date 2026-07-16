@@ -8,9 +8,27 @@ import toast from 'react-hot-toast';
 import { useAuthStore } from '../../../store/authStore';
 
 const ROLE_CLS = {
-  admin:    'bg-purple-500/10 text-purple-400 border-purple-500/20',
-  operator: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-  viewer:   'bg-slate-500/10 text-slate-400 border-slate-700',
+  admin:            'bg-purple-500/10 text-purple-400 border-purple-500/20',
+  operator:         'bg-blue-500/10 text-blue-400 border-blue-500/20',
+  viewer:           'bg-slate-500/10 text-slate-400 border-slate-700',
+  manager:          'bg-indigo-500/10 text-indigo-400 border-indigo-500/20',
+  finance:          'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+  billing_officer:  'bg-amber-500/10 text-amber-400 border-amber-500/20',
+  customer_service: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+  meter_technician: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
+  delivery_officer: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
+};
+
+const ROLE_LABEL = {
+  admin:            'Admin',
+  operator:         'Operator',
+  viewer:           'Viewer',
+  manager:          'Manager',
+  finance:          'Finance',
+  billing_officer:  'Billing Officer',
+  customer_service: 'Customer Service',
+  meter_technician: 'Meter Technician',
+  delivery_officer: 'Delivery Officer',
 };
 
 function Modal({ title, onClose, children }) {
@@ -119,8 +137,8 @@ export default function UsersPage() {
                 <td><span className="text-slate-400 font-mono text-xs">{u.username}</span></td>
                 <td><span className="text-slate-400 text-xs">{u.email}</span></td>
                 <td>
-                  <span className={`text-xs px-2 py-0.5 rounded-full border capitalize ${ROLE_CLS[u.role]}`}>
-                    {u.role}
+                  <span className={`text-xs px-2 py-0.5 rounded-full border ${ROLE_CLS[u.role] || 'bg-slate-500/10 text-slate-400 border-slate-700'}`}>
+                    {ROLE_LABEL[u.role] || u.role}
                   </span>
                 </td>
                 <td>
@@ -171,6 +189,12 @@ export default function UsersPage() {
               <select className="select" value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}>
                 <option value="viewer">Viewer</option>
                 <option value="operator">Operator</option>
+                <option value="manager">Manager</option>
+                <option value="finance">Finance</option>
+                <option value="billing_officer">Billing Officer</option>
+                <option value="customer_service">Customer Service</option>
+                <option value="meter_technician">Meter Technician</option>
+                <option value="delivery_officer">Delivery Officer</option>
                 <option value="admin">Admin</option>
               </select>
             </div>

@@ -2,6 +2,9 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# postgresql-client provides pg_dump for scheduled and manual database backups
+RUN apk add --no-cache postgresql-client
+
 # Install dependencies (cached unless package.json changes)
 COPY package*.json ./
 RUN npm ci --only=production

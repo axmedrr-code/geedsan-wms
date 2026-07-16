@@ -5,3 +5,5 @@ common_name="EU868"
 
 [regions.gateway.backend.mqtt]
 server="tcp://172.28.0.10:1883/"
+username="chirpstack"
+password="Chirpstack@Mqtt2024"

@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Gauge, Wifi, WifiOff, Droplets, AlertTriangle, Battery,
-  TrendingUp, TrendingDown, Activity, RefreshCw, Users, Zap
+  TrendingUp, TrendingDown, Activity, RefreshCw, Users, Zap,
+  DollarSign, Receipt, CreditCard, Clock
 } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
@@ -115,6 +116,27 @@ export default function DashboardPage() {
     refetchInterval: 60000
   });
 
+  const { data: billingStats } = useQuery({
+    queryKey: ['billing-stats', refreshKey],
+    queryFn: () => dashboardAPI.getBillingStats().then(r => r.data).catch(() => null),
+    refetchInterval: 60000,
+    retry: false,
+  });
+
+  const { data: revenueChart } = useQuery({
+    queryKey: ['revenue-chart', refreshKey],
+    queryFn: () => dashboardAPI.getRevenueChart({ months: 6 }).then(r => r.data).catch(() => []),
+    refetchInterval: 120000,
+    retry: false,
+  });
+
+  const { data: topCustomers } = useQuery({
+    queryKey: ['top-customers', refreshKey],
+    queryFn: () => dashboardAPI.getTopCustomers().then(r => r.data).catch(() => []),
+    refetchInterval: 120000,
+    retry: false,
+  });
+
   useRealtimeEvents([['dashboard-stats'], ['consumption-chart'], ['recent-alarms'], ['distribution'], ['top-consumers']]);
 
   const batteryData = distribution?.battery || [];
@@ -187,6 +209,81 @@ export default function DashboardPage() {
           color="purple"
         />
       </div>
+
+      {/* Revenue / Billing Stats */}
+      {billingStats && (
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <DollarSign className="w-4 h-4 text-emerald-400" />
+            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Revenue & Billing</h2>
+            <Link href="/dashboard/billing" className="ml-auto text-xs text-primary-400 hover:text-primary-300">View all →</Link>
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+            <StatCard icon={DollarSign}  label="Today's Revenue"   value={`$${Number(billingStats.revenueToday || 0).toFixed(0)}`}       color="green"   />
+            <StatCard icon={TrendingUp}  label="Monthly Revenue"   value={`$${Number(billingStats.revenueThisMonth || 0).toFixed(0)}`}   color="primary" />
+            <StatCard icon={Clock}       label="Outstanding"       value={`$${Number(billingStats.outstandingBalance || 0).toFixed(0)}`} color="amber"   />
+            <StatCard icon={Receipt}     label="Invoices Today"    value={billingStats.invoicesToday ?? 0}                               color="cyan"    />
+            <StatCard icon={CreditCard}  label="Payments Today"    value={billingStats.paymentsToday ?? 0}                              color="purple"  />
+          </div>
+        </div>
+      )}
+
+      {/* Revenue Trend + Top Customers (only shown when data exists) */}
+      {(revenueChart?.length > 0 || topCustomers?.length > 0) && (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+          {revenueChart?.length > 0 && (
+            <div className="xl:col-span-2 card-glow p-5">
+              <div className="flex items-center justify-between mb-5">
+                <div>
+                  <h3 className="font-semibold text-white">Revenue Trend</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Last 30 days ($)</p>
+                </div>
+                <DollarSign className="w-4 h-4 text-slate-500" />
+              </div>
+              <ResponsiveContainer width="100%" height={200}>
+                <AreaChart data={revenueChart} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id="revenueGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                  <XAxis dataKey="month" tick={{ fill: '#64748b', fontSize: 10 }} />
+                  <YAxis tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={v => `$${v}`} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Area type="monotone" dataKey="revenue" name="Revenue" stroke="#10b981" fill="url(#revenueGrad)" strokeWidth={2} />
+                  <Area type="monotone" dataKey="invoiced" name="Invoiced" stroke="#6366f1" fill="none" strokeWidth={1.5} strokeDasharray="4 2" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+          {topCustomers?.length > 0 && (
+            <div className="card-glow p-5">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-white">Top Customers</h3>
+                <Link href="/dashboard/customers" className="text-xs text-primary-400 hover:text-primary-300">View all →</Link>
+              </div>
+              <div className="space-y-2">
+                {topCustomers.slice(0, 6).map((c, i) => (
+                  <Link key={c.customer_id} href={`/dashboard/customers/${c.customer_id}`}>
+                    <div className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-slate-800/50 transition-colors">
+                      <span className="text-xs text-slate-500 w-4 text-center font-medium">{i + 1}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-white truncate">{c.customer_name}</span>
+                          <span className="text-sm font-bold text-emerald-400">${Number(c.total_paid || 0).toFixed(0)}</span>
+                        </div>
+                        <p className="text-xs text-slate-500 truncate">{c.customer_number}</p>
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">

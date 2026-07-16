@@ -27,3 +27,5 @@ command_topic="application/{{application_id}}/device/{{dev_eui}}/command/{{comma
 # its DNS config, so "mosquitto" wouldn't resolve. 172.28.0.10 is mosquitto's
 # pinned ipv4_address on geedsan-network — stable across restarts.
 server="tcp://172.28.0.10:1883/"
+username="chirpstack"
+password="Chirpstack@Mqtt2024"

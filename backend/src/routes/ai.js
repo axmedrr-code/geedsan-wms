@@ -36,8 +36,14 @@ router.post('/consumption-forecast', authenticate, async (req, res) => {
     const { meter_id, days=7 } = req.body;
     const readings = await query(`SELECT DATE(timestamp) AS date, SUM(current_flow)*0.0167 AS daily_consumption FROM meter_readings WHERE meter_id=$1 AND timestamp>=NOW()-INTERVAL '30 days' GROUP BY DATE(timestamp) ORDER BY date ASC`, [meter_id]);
     const data = readings.rows;
-    if (data.length < 3) return res.json({ forecast: [], message: 'Insufficient data' });
-    const values = data.map(r=>parseFloat(r.daily_consumption));
+    const MIN_READINGS = 10;
+    if (data.length < MIN_READINGS) {
+      return res.status(422).json({ error: 'insufficient_data', minimum_required: MIN_READINGS, available: data.length });
+    }
+    const values = data.map(r => parseFloat(r.daily_consumption)).filter(v => !isNaN(v));
+    if (values.length < MIN_READINGS) {
+      return res.status(422).json({ error: 'insufficient_data', minimum_required: MIN_READINGS, available: values.length });
+    }
     const wn = Math.min(7, values.length);
     const avg = values.slice(-wn).reduce((a,b)=>a+b,0)/wn;
     const forecast = Array.from({length:parseInt(days)},(_,i)=>{

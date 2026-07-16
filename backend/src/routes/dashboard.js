@@ -58,4 +58,138 @@ router.get('/top-consumers', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Failed to fetch top consumers' }); }
 });
 
+// ─── Billing dashboard endpoints ──────────────────────────────────────────────
+
+/**
+ * @openapi
+ * /dashboard/billing-stats:
+ *   get:
+ *     summary: Billing KPI counters — revenue, outstanding, overdue, active customers
+ *     tags: [Dashboard]
+ *     security: [{ bearerAuth: [] }]
+ */
+router.get('/billing-stats', authenticate, async (req, res) => {
+  try {
+    const r = await query(`
+      SELECT
+        (SELECT COALESCE(SUM(ip.amount),0)
+           FROM invoice_payments ip
+          WHERE DATE(ip.payment_date)=CURRENT_DATE) AS "revenueToday",
+        (SELECT COALESCE(SUM(ip.amount),0)
+           FROM invoice_payments ip
+          WHERE DATE_TRUNC('month',ip.payment_date)=DATE_TRUNC('month',NOW())) AS "revenueThisMonth",
+        (SELECT COALESCE(SUM(ip.amount),0)
+           FROM invoice_payments ip
+          WHERE EXTRACT(YEAR FROM ip.payment_date)=EXTRACT(YEAR FROM NOW())) AS "revenueThisYear",
+        (SELECT COALESCE(SUM(i.total_amount),0)
+           FROM invoices i
+          WHERE i.status NOT IN ('paid','cancelled')) AS "outstandingBalance",
+        (SELECT COUNT(*)
+           FROM invoices i
+          WHERE DATE(i.created_at)=CURRENT_DATE) AS "invoicesToday",
+        (SELECT COUNT(*)
+           FROM invoice_payments ip
+          WHERE DATE(ip.payment_date)=CURRENT_DATE) AS "paymentsToday",
+        (SELECT COUNT(*) FROM invoices i WHERE i.status='overdue') AS "overdueCount",
+        (SELECT COUNT(*) FROM customers WHERE account_status='active') AS "activeCustomers"
+    `);
+    const row = r.rows[0];
+    res.json({
+      revenueToday:       parseFloat(row.revenueToday),
+      revenueThisMonth:   parseFloat(row.revenueThisMonth),
+      revenueThisYear:    parseFloat(row.revenueThisYear),
+      outstandingBalance: parseFloat(row.outstandingBalance),
+      invoicesToday:      parseInt(row.invoicesToday),
+      paymentsToday:      parseInt(row.paymentsToday),
+      overdueCount:       parseInt(row.overdueCount),
+      activeCustomers:    parseInt(row.activeCustomers),
+    });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to fetch billing stats' }); }
+});
+
+/**
+ * @openapi
+ * /dashboard/revenue-chart:
+ *   get:
+ *     summary: Monthly revenue, invoiced and outstanding for the last N months
+ *     tags: [Dashboard]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: months
+ *         schema: { type: integer, default: 6 }
+ */
+router.get('/revenue-chart', authenticate, async (req, res) => {
+  try {
+    const months = Math.min(Math.max(parseInt(req.query.months) || 6, 1), 36);
+    const r = await query(`
+      WITH month_series AS (
+        SELECT TO_CHAR(gs, 'YYYY-MM') AS month
+        FROM generate_series(
+          DATE_TRUNC('month', NOW()) - ($1::integer - 1) * INTERVAL '1 month',
+          DATE_TRUNC('month', NOW()),
+          INTERVAL '1 month'
+        ) gs
+      ),
+      pay AS (
+        SELECT TO_CHAR(DATE_TRUNC('month', payment_date), 'YYYY-MM') AS month,
+               SUM(amount) AS revenue
+        FROM invoice_payments GROUP BY 1
+      ),
+      inv AS (
+        SELECT TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') AS month,
+               SUM(total_amount) AS invoiced,
+               SUM(CASE WHEN status NOT IN ('paid','cancelled') THEN total_amount ELSE 0 END) AS outstanding
+        FROM invoices GROUP BY 1
+      )
+      SELECT m.month,
+             COALESCE(p.revenue, 0)     AS revenue,
+             COALESCE(i.invoiced, 0)    AS invoiced,
+             COALESCE(i.outstanding, 0) AS outstanding
+      FROM month_series m
+      LEFT JOIN pay p USING (month)
+      LEFT JOIN inv i USING (month)
+      ORDER BY m.month ASC
+    `, [months]);
+    res.json(r.rows);
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to fetch revenue chart' }); }
+});
+
+/**
+ * @openapi
+ * /dashboard/top-customers:
+ *   get:
+ *     summary: Top customers by total payments received
+ *     tags: [Dashboard]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 5 }
+ */
+router.get('/top-customers', authenticate, async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 5, 1), 50);
+    const r = await query(`
+      SELECT
+        c.id AS customer_id,
+        c.full_name AS customer_name,
+        c.customer_number,
+        c.tariff_type,
+        COALESCE(SUM(ip.amount), 0) AS total_paid,
+        COUNT(DISTINCT i.id)        AS invoice_count,
+        COUNT(DISTINCT m.id)        AS meter_count
+      FROM customers c
+      LEFT JOIN invoices i        ON i.customer_id=c.id
+      LEFT JOIN invoice_payments ip ON ip.invoice_id=i.id
+      LEFT JOIN meters m          ON m.customer_id=c.id AND m.status='active'
+      WHERE c.account_status='active'
+      GROUP BY c.id, c.full_name, c.customer_number, c.tariff_type
+      ORDER BY total_paid DESC
+      LIMIT $1
+    `, [limit]);
+    res.json(r.rows);
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to fetch top customers' }); }
+});
+
 module.exports = router;
