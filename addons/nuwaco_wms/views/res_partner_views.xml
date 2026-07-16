@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
-  <!-- ── Form: add WMS tab to existing partner form ───────────────────── -->
+  <!-- Add a WMS tab to the standard partner form via xpath -->
   <record id="view_partner_form_wms" model="ir.ui.view">
     <field name="name">res.partner.form.wms</field>
     <field name="model">res.partner</field>
     <field name="inherit_id" ref="base.view_partner_form"/>
     <field name="arch" type="xml">
-      <notebook position="inside">
+      <xpath expr="//notebook" position="inside">
         <page string="WMS" name="wms_tab">
           <group>
             <group string="WMS Reference">
@@ -23,7 +23,6 @@
           </group>
           <field name="wms_meter_ids" readonly="1">
             <list>
-              <column_invisible>1</column_invisible>
               <field name="name"/>
               <field name="device_eui"/>
               <field name="meter_type"/>
@@ -34,11 +33,11 @@
             </list>
           </field>
         </page>
-      </notebook>
+      </xpath>
     </field>
   </record>
 
-  <!-- ── List: Water Customers ────────────────────────────────────────── -->
+  <!-- List view: Water Customers only -->
   <record id="view_water_customer_list" model="ir.ui.view">
     <field name="name">res.partner.list.water</field>
     <field name="model">res.partner</field>
@@ -56,7 +55,7 @@
     </field>
   </record>
 
-  <!-- ── Action: Water Customers ──────────────────────────────────────── -->
+  <!-- Action: Water Customers -->
   <record id="action_water_customers" model="ir.actions.act_window">
     <field name="name">Water Customers</field>
     <field name="res_model">res.partner</field>
