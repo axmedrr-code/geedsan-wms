@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+  <!-- ── Root menu ─────────────────────────────────────────────────────── -->
+  <menuitem id="menu_nuwaco_root"
+            name="Water Management"
+            sequence="30"
+            web_icon="nuwaco_wms,static/description/icon.png"
+            groups="group_wms_user"/>
+
+  <!-- ── Master data ───────────────────────────────────────────────────── -->
+  <menuitem id="menu_nuwaco_data"
+            name="Master Data"
+            parent="menu_nuwaco_root"
+            sequence="10"/>
+
+  <menuitem id="menu_nuwaco_customers"
+            name="Customers"
+            parent="menu_nuwaco_data"
+            action="action_water_customers"
+            sequence="10"/>
+
+  <menuitem id="menu_nuwaco_meters"
+            name="Water Meters"
+            parent="menu_nuwaco_data"
+            action="action_nuwaco_meter"
+            sequence="20"/>
+
+  <!-- ── Operations ────────────────────────────────────────────────────── -->
+  <menuitem id="menu_nuwaco_operations"
+            name="Operations"
+            parent="menu_nuwaco_root"
+            sequence="20"/>
+
+  <menuitem id="menu_nuwaco_readings"
+            name="Meter Readings"
+            parent="menu_nuwaco_operations"
+            action="action_nuwaco_reading"
+            sequence="10"/>
+
+  <menuitem id="menu_nuwaco_alarms"
+            name="Alarms"
+            parent="menu_nuwaco_operations"
+            action="action_nuwaco_alarm"
+            sequence="20"/>
+
+</odoo>

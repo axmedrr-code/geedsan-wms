@@ -164,6 +164,8 @@ services:
     # --database and --db-filter still work in Odoo 18.
     # $$  = literal $ in Docker Compose (prevents env-var expansion).
     command: ["odoo", "--database=odoo", "--db-filter=^odoo$$"]
+    volumes:
+      - ./addons:/mnt/extra-addons
     environment:
       # Odoo 18 Docker image reads these same env vars as 16 (entrypoint
       # script hasn't changed).

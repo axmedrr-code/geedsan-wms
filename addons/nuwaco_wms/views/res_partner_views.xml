@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+  <!-- ── Form: add WMS tab to existing partner form ───────────────────── -->
+  <record id="view_partner_form_wms" model="ir.ui.view">
+    <field name="name">res.partner.form.wms</field>
+    <field name="model">res.partner</field>
+    <field name="inherit_id" ref="base.view_partner_form"/>
+    <field name="arch" type="xml">
+      <notebook position="inside">
+        <page string="WMS" name="wms_tab">
+          <group>
+            <group string="WMS Reference">
+              <field name="is_water_customer"/>
+              <field name="wms_customer_number"/>
+              <field name="wms_customer_id" readonly="1"/>
+              <field name="wms_tariff_type"/>
+              <field name="wms_account_status"/>
+            </group>
+            <group string="Meters">
+              <field name="wms_meter_count" readonly="1"/>
+            </group>
+          </group>
+          <field name="wms_meter_ids" readonly="1">
+            <list>
+              <column_invisible>1</column_invisible>
+              <field name="name"/>
+              <field name="device_eui"/>
+              <field name="meter_type"/>
+              <field name="status"/>
+              <field name="is_online"/>
+              <field name="total_consumption"/>
+              <field name="last_seen"/>
+            </list>
+          </field>
+        </page>
+      </notebook>
+    </field>
+  </record>
+
+  <!-- ── List: Water Customers ────────────────────────────────────────── -->
+  <record id="view_water_customer_list" model="ir.ui.view">
+    <field name="name">res.partner.list.water</field>
+    <field name="model">res.partner</field>
+    <field name="arch" type="xml">
+      <list string="Water Customers">
+        <field name="name"/>
+        <field name="wms_customer_number"/>
+        <field name="wms_tariff_type"/>
+        <field name="wms_account_status"/>
+        <field name="wms_meter_count"/>
+        <field name="email"/>
+        <field name="phone"/>
+        <field name="city"/>
+      </list>
+    </field>
+  </record>
+
+  <!-- ── Action: Water Customers ──────────────────────────────────────── -->
+  <record id="action_water_customers" model="ir.actions.act_window">
+    <field name="name">Water Customers</field>
+    <field name="res_model">res.partner</field>
+    <field name="view_mode">list,form</field>
+    <field name="domain">[('is_water_customer','=',True)]</field>
+    <field name="context">{'default_is_water_customer': True, 'default_customer_rank': 1}</field>
+    <field name="view_ids" eval="[(5,0,0),(0,0,{'view_mode':'list','view_id':ref('view_water_customer_list')})]"/>
+  </record>
+
+</odoo>

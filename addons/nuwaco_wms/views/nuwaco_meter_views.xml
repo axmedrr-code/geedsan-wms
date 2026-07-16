@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+  <!-- ── List ─────────────────────────────────────────────────────────── -->
+  <record id="view_nuwaco_meter_list" model="ir.ui.view">
+    <field name="name">nuwaco.meter.list</field>
+    <field name="model">nuwaco.meter</field>
+    <field name="arch" type="xml">
+      <list string="Water Meters" decoration-danger="status=='faulty'" decoration-muted="status=='removed'">
+        <field name="name"/>
+        <field name="device_eui"/>
+        <field name="partner_id"/>
+        <field name="meter_type"/>
+        <field name="status"/>
+        <field name="is_online" widget="boolean_toggle"/>
+        <field name="valve_status"/>
+        <field name="total_consumption" string="Consumption (m³)"/>
+        <field name="last_seen"/>
+      </list>
+    </field>
+  </record>
+
+  <!-- ── Form ─────────────────────────────────────────────────────────── -->
+  <record id="view_nuwaco_meter_form" model="ir.ui.view">
+    <field name="name">nuwaco.meter.form</field>
+    <field name="model">nuwaco.meter</field>
+    <field name="arch" type="xml">
+      <form string="Water Meter">
+        <header>
+          <field name="status" widget="statusbar" statusbar_visible="active,inactive,faulty,removed"/>
+        </header>
+        <sheet>
+          <div class="oe_button_box" name="button_box">
+            <button name="action_view_readings" type="object" class="oe_stat_button" icon="fa-tachometer">
+              <field name="reading_count" widget="statinfo" string="Readings"/>
+            </button>
+            <button name="action_view_alarms" type="object" class="oe_stat_button" icon="fa-bell">
+              <field name="alarm_count" widget="statinfo" string="Alarms"/>
+            </button>
+          </div>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="Meter Number"/></h1>
+          </div>
+          <group>
+            <group string="Identity">
+              <field name="wms_meter_id" readonly="1"/>
+              <field name="device_eui"/>
+              <field name="meter_serial"/>
+            </group>
+            <group string="Assignment">
+              <field name="partner_id"/>
+              <field name="meter_type"/>
+              <field name="installed_at"/>
+              <field name="installation_address"/>
+            </group>
+          </group>
+          <group>
+            <group string="Telemetry">
+              <field name="is_online"/>
+              <field name="valve_status"/>
+              <field name="total_consumption"/>
+              <field name="current_flow"/>
+              <field name="battery_voltage"/>
+              <field name="last_seen"/>
+            </group>
+            <group string="Location">
+              <field name="latitude"/>
+              <field name="longitude"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Readings" name="readings">
+              <field name="reading_ids" readonly="1">
+                <list>
+                  <field name="timestamp"/>
+                  <field name="total_consumption"/>
+                  <field name="current_flow"/>
+                  <field name="battery_voltage"/>
+                  <field name="rssi"/>
+                </list>
+              </field>
+            </page>
+            <page string="Alarms" name="alarms">
+              <field name="alarm_ids" readonly="1">
+                <list decoration-danger="severity=='critical'" decoration-warning="severity=='warning'">
+                  <field name="triggered_at"/>
+                  <field name="alarm_type"/>
+                  <field name="severity"/>
+                  <field name="status"/>
+                  <field name="message"/>
+                </list>
+              </field>
+            </page>
+          </notebook>
+        </sheet>
+        <chatter/>
+      </form>
+    </field>
+  </record>
+
+  <!-- ── Search ────────────────────────────────────────────────────────── -->
+  <record id="view_nuwaco_meter_search" model="ir.ui.view">
+    <field name="name">nuwaco.meter.search</field>
+    <field name="model">nuwaco.meter</field>
+    <field name="arch" type="xml">
+      <search>
+        <field name="name" string="Meter Number"/>
+        <field name="device_eui" string="Device EUI"/>
+        <field name="partner_id" string="Customer"/>
+        <separator/>
+        <filter name="active"   string="Active"   domain="[('status','=','active')]"/>
+        <filter name="faulty"   string="Faulty"   domain="[('status','=','faulty')]"/>
+        <filter name="online"   string="Online"   domain="[('is_online','=',True)]"/>
+        <filter name="offline"  string="Offline"  domain="[('is_online','=',False),('status','=','active')]"/>
+        <separator/>
+        <group expand="0" string="Group By">
+          <filter string="Customer"    name="by_customer" context="{'group_by':'partner_id'}"/>
+          <filter string="Meter Type"  name="by_type"     context="{'group_by':'meter_type'}"/>
+          <filter string="Status"      name="by_status"   context="{'group_by':'status'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <!-- ── Action ────────────────────────────────────────────────────────── -->
+  <record id="action_nuwaco_meter" model="ir.actions.act_window">
+    <field name="name">Water Meters</field>
+    <field name="res_model">nuwaco.meter</field>
+    <field name="view_mode">list,form</field>
+    <field name="search_view_id" ref="view_nuwaco_meter_search"/>
+  </record>
+
+</odoo>

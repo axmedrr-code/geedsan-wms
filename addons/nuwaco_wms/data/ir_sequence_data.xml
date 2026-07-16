@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+  <!-- Sequence is reserved for future use (e.g. alarm reference numbers).
+       Readings use wms_reading_id directly; meters use their WMS meter_number. -->
+  <record id="seq_nuwaco_alarm" model="ir.sequence">
+    <field name="name">WMS Alarm Reference</field>
+    <field name="code">nuwaco.alarm</field>
+    <field name="prefix">ALM-</field>
+    <field name="padding">5</field>
+    <field name="company_id" eval="False"/>
+  </record>
+</odoo>

@@ -1,0 +1,7 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_nuwaco_meter_user,nuwaco.meter user,model_nuwaco_meter,group_wms_user,1,0,0,0
+access_nuwaco_meter_manager,nuwaco.meter manager,model_nuwaco_meter,group_wms_manager,1,1,1,1
+access_nuwaco_reading_user,nuwaco.reading user,model_nuwaco_reading,group_wms_user,1,0,0,0
+access_nuwaco_reading_manager,nuwaco.reading manager,model_nuwaco_reading,group_wms_manager,1,1,1,1
+access_nuwaco_alarm_user,nuwaco.alarm user,model_nuwaco_alarm,group_wms_user,1,0,0,0
+access_nuwaco_alarm_manager,nuwaco.alarm manager,model_nuwaco_alarm,group_wms_manager,1,1,1,1

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+  <!-- Extend the standard invoice form with a WMS tab -->
+  <record id="view_move_form_wms" model="ir.ui.view">
+    <field name="name">account.move.form.wms</field>
+    <field name="model">account.move</field>
+    <field name="inherit_id" ref="account.view_move_form"/>
+    <field name="arch" type="xml">
+      <notebook position="inside">
+        <page string="WMS" name="wms_tab"
+              attrs="{'invisible': [('move_type', 'not in', ['out_invoice','out_refund'])]}">
+          <group>
+            <group string="WMS Reference">
+              <field name="wms_invoice_id"     readonly="1"/>
+              <field name="wms_invoice_number" readonly="1"/>
+              <field name="wms_meter_id"/>
+            </group>
+            <group string="Billing Period">
+              <field name="wms_period_start"/>
+              <field name="wms_period_end"/>
+              <field name="wms_water_volume"/>
+            </group>
+          </group>
+        </page>
+      </notebook>
+    </field>
+  </record>
+
+</odoo>

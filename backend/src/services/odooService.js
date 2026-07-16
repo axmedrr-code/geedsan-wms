@@ -112,22 +112,29 @@ const syncPaymentToOdoo = async (paymentId) => {
   if (!invoice.odoo_id) await syncInvoiceToOdoo(invoice.id);
 
   const refreshedInvoice = await query('SELECT odoo_id, customer_id FROM invoices WHERE id=$1', [invoice.id]);
-  const moveId = parseInt(refreshedInvoice.rows[0].odoo_id, 10);
   const customer = await query('SELECT odoo_id FROM customers WHERE id=$1', [refreshedInvoice.rows[0].customer_id]);
   const partnerId = parseInt(customer.rows[0].odoo_id, 10);
 
-  const journals = await odoo.execute('account.journal', 'search', [[['type', '=', 'bank']]], { limit: 1 });
-  const journalId = journals[0];
-  if (!journalId) throw new Error('No bank journal found in Odoo to record payment against');
+  // Prefer 'bank' journal, fall back to 'cash'.
+  // Note: in Odoo 18 account.payment does not accept invoice_ids at creation;
+  // reconciliation is handled by Odoo automatically via outstanding credits.
+  let journals = await odoo.execute('account.journal', 'search', [[['type', '=', 'bank']]], { limit: 1 });
+  if (!journals.length) journals = await odoo.execute('account.journal', 'search', [[['type', '=', 'cash']]], { limit: 1 });
+  if (!journals.length) throw new Error('No bank or cash journal found in Odoo');
+
+  const payDate = payment.payment_date
+    ? new Date(payment.payment_date).toISOString().slice(0, 10)
+    : new Date().toISOString().slice(0, 10);
 
   const paymentOdooId = await odoo.execute('account.payment', 'create', [{
     payment_type: 'inbound',
     partner_type: 'customer',
     partner_id: partnerId,
     amount: Number(payment.amount),
-    journal_id: journalId,
+    date: payDate,
+    journal_id: journals[0],
     ref: payment.reference || `Payment for ${invoice.invoice_number}`,
-    invoice_ids: [[6, 0, [moveId]]]
+    memo: payment.note || `WMS payment id ${paymentId}`,
   }]);
 
   await odoo.execute('account.payment', 'action_post', [[paymentOdooId]]);
@@ -136,8 +143,143 @@ const syncPaymentToOdoo = async (paymentId) => {
   return { paymentId, odooId: paymentOdooId };
 };
 
+// ── Meter ──────────────────────────────────────────────────────────────────
+
+const syncMeterToOdoo = async (meterId) => {
+  const meterR = await query(`
+    SELECT m.*, c.odoo_id AS customer_odoo_id
+    FROM meters m
+    LEFT JOIN customers c ON c.id = m.customer_id
+    WHERE m.id = $1`, [meterId]);
+  const meter = meterR.rows[0];
+  if (!meter) throw new Error('Meter not found');
+
+  // Ensure the linked customer is in Odoo first
+  let partnerId = meter.customer_odoo_id ? parseInt(meter.customer_odoo_id, 10) : null;
+  if (meter.customer_id && !partnerId) {
+    const customerSync = await syncCustomerToOdoo(meter.customer_id);
+    partnerId = customerSync.odooId;
+  }
+
+  const payload = {
+    name: meter.meter_number || meter.device_eui,
+    wms_meter_id: String(meter.id),
+    device_eui: meter.device_eui || false,
+    meter_serial: meter.meter_serial || false,
+    partner_id: partnerId || false,
+    meter_type: meter.tariff_type || 'residential',
+    status: meter.status || 'active',
+    total_consumption: Number(meter.total_consumption || 0),
+    current_flow: Number(meter.current_flow || 0),
+    battery_voltage: meter.battery_voltage ? Number(meter.battery_voltage) : false,
+    is_online: Boolean(meter.is_online),
+    valve_status: meter.valve_status || 'unknown',
+    latitude: meter.latitude ? Number(meter.latitude) : false,
+    longitude: meter.longitude ? Number(meter.longitude) : false,
+    installation_address: meter.installation_address || false,
+    installed_at: meter.installed_at ? new Date(meter.installed_at).toISOString() : false,
+    last_seen: meter.last_seen ? new Date(meter.last_seen).toISOString() : false,
+  };
+
+  let odooId = meter.odoo_id ? parseInt(meter.odoo_id, 10) : null;
+  if (odooId) {
+    await odoo.execute('nuwaco.meter', 'write', [[odooId], payload]);
+  } else {
+    const existing = await odoo.execute('nuwaco.meter', 'search', [[['wms_meter_id', '=', String(meter.id)]]]);
+    if (existing.length) {
+      odooId = existing[0];
+      await odoo.execute('nuwaco.meter', 'write', [[odooId], payload]);
+    } else {
+      odooId = await odoo.execute('nuwaco.meter', 'create', [payload]);
+    }
+    await query('UPDATE meters SET odoo_id=$1, odoo_synced_at=NOW(), updated_at=NOW() WHERE id=$2', [String(odooId), meterId]);
+  }
+
+  return { meterId, odooId, payload };
+};
+
+// ── Reading ────────────────────────────────────────────────────────────────
+
+const syncReadingToOdoo = async (readingId) => {
+  const readingR = await query(`
+    SELECT r.*, m.odoo_id AS meter_odoo_id, m.id AS meter_uuid
+    FROM meter_readings r
+    LEFT JOIN meters m ON m.id = r.meter_id
+    WHERE r.id = $1`, [readingId]);
+  const reading = readingR.rows[0];
+  if (!reading) throw new Error('Reading not found');
+  if (reading.odoo_id) return { readingId, odooId: parseInt(reading.odoo_id, 10), skipped: 'already synced' };
+
+  // Ensure meter is in Odoo first
+  let meterOdooId = reading.meter_odoo_id ? parseInt(reading.meter_odoo_id, 10) : null;
+  if (reading.meter_uuid && !meterOdooId) {
+    const meterSync = await syncMeterToOdoo(reading.meter_uuid);
+    meterOdooId = meterSync.odooId;
+  }
+
+  const payload = {
+    wms_reading_id: Number(reading.id),
+    meter_id: meterOdooId || false,
+    timestamp: reading.timestamp ? new Date(reading.timestamp).toISOString() : false,
+    total_consumption: Number(reading.total_consumption || 0),
+    current_flow: Number(reading.current_flow || 0),
+    battery_voltage: reading.battery_voltage ? Number(reading.battery_voltage) : false,
+    rssi: reading.rssi ? Number(reading.rssi) : false,
+  };
+
+  const odooId = await odoo.execute('nuwaco.reading', 'create', [payload]);
+  await query('UPDATE meter_readings SET odoo_id=$1 WHERE id=$2', [String(odooId), readingId]);
+
+  return { readingId, odooId };
+};
+
+// ── Alarm ──────────────────────────────────────────────────────────────────
+
+const syncAlarmToOdoo = async (alarmId) => {
+  const alarmR = await query(`
+    SELECT a.*, m.odoo_id AS meter_odoo_id, m.id AS meter_uuid
+    FROM alarms a
+    LEFT JOIN meters m ON m.id = a.meter_id
+    WHERE a.id = $1`, [alarmId]);
+  const alarm = alarmR.rows[0];
+  if (!alarm) throw new Error('Alarm not found');
+
+  let meterOdooId = alarm.meter_odoo_id ? parseInt(alarm.meter_odoo_id, 10) : null;
+  if (alarm.meter_uuid && !meterOdooId) {
+    const meterSync = await syncMeterToOdoo(alarm.meter_uuid);
+    meterOdooId = meterSync.odooId;
+  }
+
+  const payload = {
+    wms_alarm_id: String(alarm.id),
+    meter_id: meterOdooId || false,
+    alarm_type: alarm.alarm_type || 'unknown',
+    severity: alarm.severity || 'warning',
+    message: alarm.message || false,
+    status: alarm.status || 'active',
+    triggered_at: alarm.triggered_at ? new Date(alarm.triggered_at).toISOString() : false,
+    resolved_at: alarm.resolved_at ? new Date(alarm.resolved_at).toISOString() : false,
+  };
+
+  let odooId = alarm.odoo_id ? parseInt(alarm.odoo_id, 10) : null;
+  if (odooId) {
+    await odoo.execute('nuwaco.alarm', 'write', [[odooId], payload]);
+  } else {
+    const existing = await odoo.execute('nuwaco.alarm', 'search', [[['wms_alarm_id', '=', String(alarm.id)]]]);
+    if (existing.length) {
+      odooId = existing[0];
+      await odoo.execute('nuwaco.alarm', 'write', [[odooId], payload]);
+    } else {
+      odooId = await odoo.execute('nuwaco.alarm', 'create', [payload]);
+    }
+    await query('UPDATE alarms SET odoo_id=$1, odoo_synced_at=NOW() WHERE id=$2', [String(odooId), alarmId]);
+  }
+
+  return { alarmId, odooId };
+};
+
 const enqueueOdooSync = async (entityType, entityId) => {
-  const validTypes = ['customer', 'product', 'invoice', 'payment'];
+  const validTypes = ['customer', 'product', 'invoice', 'payment', 'meter', 'reading', 'alarm'];
   if (!validTypes.includes(entityType)) throw new Error('Invalid Odoo entity type');
 
   const result = await query(
@@ -153,9 +295,12 @@ const enqueueOdooSync = async (entityType, entityId) => {
 
 const SYNC_HANDLERS = {
   customer: syncCustomerToOdoo,
-  product: syncProductToOdoo,
-  invoice: syncInvoiceToOdoo,
-  payment: syncPaymentToOdoo
+  product:  syncProductToOdoo,
+  invoice:  syncInvoiceToOdoo,
+  payment:  syncPaymentToOdoo,
+  meter:    syncMeterToOdoo,
+  reading:  syncReadingToOdoo,
+  alarm:    syncAlarmToOdoo,
 };
 
 const processRetryQueue = async () => {
@@ -212,8 +357,11 @@ module.exports = {
   syncProductToOdoo,
   syncInvoiceToOdoo,
   syncPaymentToOdoo,
+  syncMeterToOdoo,
+  syncReadingToOdoo,
+  syncAlarmToOdoo,
   enqueueOdooSync,
   processRetryQueue,
   getOdooQueue,
-  getOdooStatus
+  getOdooStatus,
 };
