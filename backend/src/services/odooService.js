@@ -143,6 +143,10 @@ const syncPaymentToOdoo = async (paymentId) => {
   return { paymentId, odooId: paymentOdooId };
 };
 
+// Convert a JS date value to Odoo's expected datetime string 'YYYY-MM-DD HH:MM:SS'.
+// Odoo XML-RPC rejects ISO 8601 format (milliseconds + Z suffix).
+const toOdooDatetime = (v) => v ? new Date(v).toISOString().replace('T', ' ').slice(0, 19) : false;
+
 // ── Meter ──────────────────────────────────────────────────────────────────
 
 const syncMeterToOdoo = async (meterId) => {
@@ -177,8 +181,8 @@ const syncMeterToOdoo = async (meterId) => {
     latitude: meter.latitude ? Number(meter.latitude) : false,
     longitude: meter.longitude ? Number(meter.longitude) : false,
     installation_address: meter.installation_address || false,
-    installed_at: meter.installed_at ? new Date(meter.installed_at).toISOString() : false,
-    last_seen: meter.last_seen ? new Date(meter.last_seen).toISOString() : false,
+    installed_at: toOdooDatetime(meter.installed_at),
+    last_seen:    toOdooDatetime(meter.last_seen),
   };
 
   let odooId = meter.odoo_id ? parseInt(meter.odoo_id, 10) : null;
@@ -220,7 +224,7 @@ const syncReadingToOdoo = async (readingId) => {
   const payload = {
     wms_reading_id: Number(reading.id),
     meter_id: meterOdooId || false,
-    timestamp: reading.timestamp ? new Date(reading.timestamp).toISOString() : false,
+    timestamp: toOdooDatetime(reading.timestamp),
     total_consumption: Number(reading.total_consumption || 0),
     current_flow: Number(reading.current_flow || 0),
     battery_voltage: reading.battery_voltage ? Number(reading.battery_voltage) : false,
@@ -257,8 +261,8 @@ const syncAlarmToOdoo = async (alarmId) => {
     severity: alarm.severity || 'warning',
     message: alarm.message || false,
     status: alarm.status || 'active',
-    triggered_at: alarm.triggered_at ? new Date(alarm.triggered_at).toISOString() : false,
-    resolved_at: alarm.resolved_at ? new Date(alarm.resolved_at).toISOString() : false,
+    triggered_at: toOdooDatetime(alarm.triggered_at),
+    resolved_at:  toOdooDatetime(alarm.resolved_at),
   };
 
   let odooId = alarm.odoo_id ? parseInt(alarm.odoo_id, 10) : null;
