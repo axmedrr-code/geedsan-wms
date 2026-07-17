@@ -2,6 +2,7 @@ const { query } = require('../config/database');
 const { processAlarms, checkContinuousFlow } = require('./alarmService');
 const { sendNotification } = require('./notificationService');
 const realtimeService = require('./realtimeService');
+const { enqueueOdooSync } = require('./odooService');
 
 // Gateways self-register from real traffic — no manual provisioning step
 // needed before a gateway's uplinks start showing up in /api/gateways.
@@ -43,15 +44,19 @@ const ingestTelemetry = async (meter, decoded, meta = {}) => {
     totalConsumption = (decoded.pulseCount * constant) / 1000;
   }
 
-  await query(
+  const readingInsert = await query(
     `INSERT INTO meter_readings (
       meter_id, device_eui, timestamp, total_consumption, current_flow,
       battery_voltage, pressure, rssi, snr, pulse_count, status_word_1, status_word_2,
       trigger_source, f_port, f_cnt, raw_payload, alarm_flags, gateway_eui, created_at
-    ) VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())`,
+    ) VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+    RETURNING id`,
     [meter.id, meter.device_eui, totalConsumption, decoded.currentFlow, decoded.batteryVoltage,
       decoded.pressure, rssi, snr, decoded.pulseCount, decoded.statusWord1, decoded.statusWord2,
       decoded.triggerSource, fPort, fCnt, rawPayload, JSON.stringify(decoded.alarmFlags || {}), gatewayEui]
+  );
+  enqueueOdooSync('reading', readingInsert.rows[0].id).catch(err =>
+    console.error('[odoo] failed to enqueue reading sync:', err.message)
   );
 
   if (gatewayEui) await upsertGateway(gatewayEui, rssi, snr);

@@ -48,7 +48,7 @@ services:
       # Docker Desktop on Windows sometimes reuses a stale cached image even when
       # source files change — causing the old binary to run instead of the new one.
       args:
-        CACHEBUST: "20260712-v1"
+        CACHEBUST: "20260716-step4"
     container_name: geedsan-backend
     restart: unless-stopped
     # 30 s grace lets in-flight HTTP requests complete before Node exits.
