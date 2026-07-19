@@ -296,7 +296,9 @@ services:
     environment:
       # Hostnames resolve correctly on Linux Docker bridge (no static IPs needed)
       CHIRPSTACK_POSTGRESQL__DSN:                          "postgres://chirpstack:${CHIRPSTACK_DB_PASSWORD}@postgres:5432/chirpstack?sslmode=disable"
-      CHIRPSTACK_REDIS__SERVERS:                           "redis://:${REDIS_PASSWORD}@redis:6379/1"
+      # Redis 7 ACL requires explicit "default" username in the URL.
+      # "redis://:pass@..." sends empty username and fails AUTH; "default:pass@..." works.
+      CHIRPSTACK_REDIS__SERVERS:                           "redis://default:${REDIS_PASSWORD}@redis:6379/1"
       CHIRPSTACK_API__SECRET:                              ${CHIRPSTACK_API_SECRET}
       # MQTT credentials — overrides the values in chirpstack.toml and region_eu868.toml
       # so no credentials need to be hard-coded or committed in those files.

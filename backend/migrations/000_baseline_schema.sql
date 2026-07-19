@@ -1,4 +1,4 @@
--- GEEDSAN Water Meter Management System
+-- NUWACO Water Utility Management System
 -- Database Schema v1.0
 
 -- Enable UUID extension
