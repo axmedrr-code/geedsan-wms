@@ -25,11 +25,17 @@ services:
     restart: unless-stopped
     stop_grace_period: 60s
     environment:
-      POSTGRES_DB:       geedsan_wms
-      POSTGRES_USER:     geedsan
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB:              geedsan_wms
+      POSTGRES_USER:            geedsan
+      POSTGRES_PASSWORD:        ${DB_PASSWORD}
+      # Passed to init-chirpstack.sh so the init script can create the
+      # chirpstack user without hard-coding any credentials.
+      CHIRPSTACK_DB_PASSWORD:   ${CHIRPSTACK_DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Runs once on first init of the data directory; creates the
+      # chirpstack user, database, and required pg extensions.
+      - ./deploy/postgres/init-chirpstack.sh:/docker-entrypoint-initdb.d/10-chirpstack.sh:ro
     networks:
       - geedsan-network
     healthcheck:
