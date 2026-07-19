@@ -184,7 +184,10 @@ const runMonthlyAutoBilling = async () => {
 
     try {
       const cycle = await createBillingCycleForCustomer(customer.id, 'monthly', periodStart, periodEnd, dueDate, null, 'Auto-generated monthly billing');
-      const invoiceNumber = `INV-${ym}-${customer.customer_number}`;
+      const custRef = (customer.customer_number && customer.customer_number.trim())
+        ? customer.customer_number.trim()
+        : customer.id.slice(0, 8).toUpperCase();
+      const invoiceNumber = `INV-${ym}-${custRef}`;
       await postBillingCycleInvoice(cycle.id, invoiceNumber, 'Auto-generated invoice', null);
       created += 1;
     } catch (err) {

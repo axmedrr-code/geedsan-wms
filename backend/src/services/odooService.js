@@ -79,25 +79,64 @@ const syncInvoiceToOdoo = async (invoiceId) => {
   const items = itemsR.rows;
   if (!items.length) throw new Error('Invoice has no line items to sync');
 
-  const invoiceLineIds = items.map(item => [0, 0, {
+  const linePayload = items.map(item => [0, 0, {
     name: item.description,
     quantity: Number(item.quantity),
-    price_unit: Number(item.unit_price)
+    price_unit: Number(item.unit_price),
   }]);
 
-  const moveId = await odoo.execute('account.move', 'create', [{
-    move_type: 'out_invoice',
-    partner_id: customerSync.odooId,
-    invoice_date: invoice.issue_date,
-    invoice_date_due: invoice.due_date,
-    ref: invoice.invoice_number,
-    invoice_line_ids: invoiceLineIds
-  }]);
+  // Idempotency search: find any existing move with this WMS invoice number as the Odoo ref.
+  // This prevents duplicate account.move records when retrying after partial failures.
+  const found = await odoo.execute('account.move', 'search_read',
+    [[['ref', '=', invoice.invoice_number], ['move_type', '=', 'out_invoice']]],
+    { fields: ['id', 'state'], limit: 1 }
+  );
 
-  await odoo.execute('account.move', 'action_post', [[moveId]]);
+  let moveId, branch;
+
+  if (found.length === 0) {
+    // Branch A: MISS — no existing move in Odoo; create a fresh draft
+    branch = 'miss';
+    moveId = await odoo.execute('account.move', 'create', [{
+      move_type:        'out_invoice',
+      partner_id:       customerSync.odooId,
+      invoice_date:     toOdooDate(invoice.issue_date),
+      invoice_date_due: toOdooDate(invoice.due_date),
+      ref:              invoice.invoice_number,
+      invoice_line_ids: linePayload,
+    }]);
+  } else if (found[0].state === 'draft') {
+    // Branch B: HIT Draft — move exists but not posted; update its fields and post
+    branch = 'hit_draft';
+    moveId = found[0].id;
+    await odoo.execute('account.move', 'write', [[moveId], {
+      partner_id:       customerSync.odooId,
+      invoice_date:     toOdooDate(invoice.issue_date),
+      invoice_date_due: toOdooDate(invoice.due_date),
+      invoice_line_ids: [[5, 0, 0], ...linePayload],  // ORM cmd 5: delete all lines before re-adding
+    }]);
+  } else {
+    // Branch C: HIT Posted — move is already confirmed in Odoo; do not touch it
+    branch = 'hit_posted';
+    moveId = found[0].id;
+    await query('UPDATE invoices SET odoo_id=$1, updated_at=NOW() WHERE id=$2', [String(moveId), invoiceId]);
+    return { invoiceId, odooId: moveId, branch, skipped: 'already posted in Odoo' };
+  }
+
+  // Post the draft (Branches A and B).
+  // On failure: odoo_id is deliberately NOT written back — the draft remains in Odoo
+  // with ref set, so the next retry enters Branch B instead of creating a duplicate.
+  try {
+    await odoo.execute('account.move', 'action_post', [[moveId]]);
+  } catch (postErr) {
+    throw new Error(
+      `Odoo move id=${moveId} created/updated but action_post failed: ${postErr.message}. ` +
+      `odoo_id not written to WMS. Retry will find the draft via idempotency search (Branch B).`
+    );
+  }
+
   await query('UPDATE invoices SET odoo_id=$1, updated_at=NOW() WHERE id=$2', [String(moveId), invoiceId]);
-
-  return { invoiceId, odooId: moveId };
+  return { invoiceId, odooId: moveId, branch };
 };
 
 const syncPaymentToOdoo = async (paymentId) => {
@@ -143,9 +182,14 @@ const syncPaymentToOdoo = async (paymentId) => {
   return { paymentId, odooId: paymentOdooId };
 };
 
-// Convert a JS date value to Odoo's expected datetime string 'YYYY-MM-DD HH:MM:SS'.
 // Odoo XML-RPC rejects ISO 8601 format (milliseconds + Z suffix).
 const toOdooDatetime = (v) => v ? new Date(v).toISOString().replace('T', ' ').slice(0, 19) : false;
+// pg returns date columns as 'YYYY-MM-DD' strings; pass through as-is to avoid timezone shifts.
+const toOdooDate = (v) => {
+  if (!v) return false;
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  return new Date(v).toISOString().slice(0, 10);
+};
 
 // ── Meter ──────────────────────────────────────────────────────────────────
 
