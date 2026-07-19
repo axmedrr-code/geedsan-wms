@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# GEEDSAN WMS - Postgres backup script
+# NUWACO WMS - Postgres backup script
 # Dumps both application databases (geedsan_wms, odoo) plus chirpstack's,
 # rotates backups older than RETENTION_DAYS, and records each run in the
 # backup_log table (visible on the System Health dashboard).

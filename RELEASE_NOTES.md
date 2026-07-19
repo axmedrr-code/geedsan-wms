@@ -3,7 +3,7 @@
 Release Date: 2026-06-26
 
 ## Overview
-NUWACO WMS v1-foundation is a production-grade foundation release for the GEEDSAN smart water management platform. This release adds Billing and Tanker Delivery management modules, improves frontend navigation, and provides a stable Docker-based deployment snapshot.
+NUWACO WMS v1-foundation is a production-grade foundation release for the NUWACO smart water management platform. This release adds Billing and Tanker Delivery management modules, improves frontend navigation, and provides a stable Docker-based deployment snapshot.
 
 ## Key Features
 - New Billing module with invoice management and line-item support.

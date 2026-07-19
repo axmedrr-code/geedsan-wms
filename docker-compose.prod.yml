@@ -1,0 +1,339 @@
+# NUWACO WMS — Production Docker Compose
+# Target: Ubuntu Server 24.04 LTS
+#
+# Key differences from docker-compose.yml (Windows/dev):
+#   - All Windows Docker Desktop workarounds removed (static IPs, CACHEBUST,
+#     network_mode: service:postgres for ChirpStack, port 5433 PostgreSQL quirk)
+#   - Services communicate by hostname — Linux bridge DNS resolves correctly
+#   - Only nginx exposes 80/443 to the host; all other ports are internal-only
+#   - All secrets come from .env.production — no hardcoded credentials
+#   - Redis requires a password
+#   - Resource memory limits per service
+#   - Log rotation on every service (json-file, max 50–100 MB, 5–10 files)
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+#
+# First-time setup: see docs/DEPLOYMENT_GUIDE.md
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: geedsan-postgres
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      POSTGRES_DB:       geedsan_wms
+      POSTGRES_USER:     geedsan
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - geedsan-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geedsan -d geedsan_wms"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ── Backend (Node.js) ───────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: nuwaco-backend:${APP_VERSION:-latest}
+    container_name: geedsan-backend
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      NODE_ENV:             production
+      PORT:                 5000
+      # Hostname resolution — works natively on Linux Docker bridge
+      DB_HOST:              postgres
+      DB_PORT:              5432
+      DB_NAME:              geedsan_wms
+      DB_USER:              geedsan
+      DB_PASSWORD:          ${DB_PASSWORD}
+      JWT_SECRET:           ${JWT_SECRET}
+      JWT_REFRESH_SECRET:   ${JWT_REFRESH_SECRET}
+      FRONTEND_URL:         ${FRONTEND_URL}
+      ODOO_URL:             http://odoo:8069
+      ODOO_DB:              odoo
+      ODOO_USERNAME:        ${ODOO_USERNAME}
+      ODOO_API_KEY:         ${ODOO_API_KEY}
+      ODOO_PASSWORD:        ${ODOO_PASSWORD}
+      MQTT_BROKER:          mqtt://mosquitto:1883
+      MQTT_CLIENT_ID:       geedsan-backend
+      MQTT_USERNAME:        ${MQTT_USERNAME}
+      MQTT_PASSWORD:        ${MQTT_PASSWORD}
+      MQTT_TOPICS:          ${MQTT_TOPICS}
+      CHIRPSTACK_URL:       http://chirpstack:8080
+      CHIRPSTACK_API_KEY:   ${CHIRPSTACK_API_KEY}
+      CHIRPSTACK_TENANT_ID: ${CHIRPSTACK_TENANT_ID}
+      EMAIL_HOST:           ${EMAIL_HOST}
+      EMAIL_PORT:           ${EMAIL_PORT}
+      EMAIL_USER:           ${EMAIL_USER}
+      EMAIL_PASS:           ${EMAIL_PASS}
+      TELEGRAM_BOT_TOKEN:   ${TELEGRAM_BOT_TOKEN}
+    volumes:
+      - backend_reports:/app/reports
+      - backend_uploads:/app/uploads
+      - backend_logs:/app/logs
+      - backups_data:/app/backups
+    networks:
+      - geedsan-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:5000/health',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ── Frontend (Next.js) ──────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Build-time bake — tells the Next.js app where to send API calls.
+        # Must point to api.geedsan.com (not the WMS domain).
+        NEXT_PUBLIC_API_URL: ${API_URL}
+    image: nuwaco-frontend:${APP_VERSION:-latest}
+    container_name: geedsan-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HOSTNAME:  0.0.0.0
+    networks:
+      - geedsan-network
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/',r=>{process.exit(r.statusCode<400?0:1)}).on('error',()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ── Nginx reverse proxy ─────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: geedsan-nginx
+    restart: unless-stopped
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+      # Let's Encrypt certs (populated by certbot on the host — Phase 4)
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # ACME HTTP-01 challenge webroot (fallback; primary is Cloudflare DNS)
+      - /var/www/certbot:/var/www/certbot:ro
+      # Host bind-mount so fail2ban and logrotate on the host can read/rotate
+      # nginx logs without needing to know the Docker volume path.
+      - /var/log/nginx:/var/log/nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - geedsan-network
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "10"
+
+  # ── Odoo ERP ────────────────────────────────────────────────────────────────
+  odoo:
+    image: odoo:18.0
+    container_name: geedsan-odoo
+    restart: unless-stopped
+    command: ["odoo", "--database=odoo", "--db-filter=^odoo$$"]
+    volumes:
+      - ./addons:/mnt/extra-addons
+      - odoo_data:/var/lib/odoo
+    environment:
+      HOST:           postgres
+      PORT:           5432
+      USER:           geedsan
+      PASSWORD:       ${DB_PASSWORD}
+      ADMIN_PASSWORD: ${ODOO_ADMIN_PASSWORD}
+    networks:
+      - geedsan-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8069/web/health >/dev/null || wget -q -O /dev/null http://localhost:8069/web/health || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ── Mosquitto MQTT ──────────────────────────────────────────────────────────
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: geedsan-mosquitto
+    restart: unless-stopped
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./deploy/mosquitto/passwd:/mosquitto/config/passwd:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    networks:
+      - geedsan-network
+    # Port 1883 is internal-only; IoT gateways connect via ChirpStack, not directly
+    healthcheck:
+      # TCP-level check — does not require MQTT credentials
+      test: ["CMD-SHELL", "echo '' | nc -w 1 localhost 1883 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: geedsan-redis
+    restart: unless-stopped
+    # Password injected via shell so $REDIS_PASSWORD is expanded inside the container
+    command: ["sh", "-c", "redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - geedsan-network
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep -q PONG || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ── ChirpStack LoRaWAN NS ───────────────────────────────────────────────────
+  chirpstack:
+    image: chirpstack/chirpstack:4
+    container_name: geedsan-chirpstack
+    restart: unless-stopped
+    command: ["-c", "/etc/chirpstack"]
+    volumes:
+      - ./deploy/chirpstack:/etc/chirpstack:ro
+    environment:
+      # Hostnames resolve correctly on Linux Docker bridge (no static IPs needed)
+      CHIRPSTACK_POSTGRESQL__DSN:                          "postgres://chirpstack:${CHIRPSTACK_DB_PASSWORD}@postgres:5432/chirpstack?sslmode=disable"
+      CHIRPSTACK_REDIS__SERVERS:                           "redis://:${REDIS_PASSWORD}@redis:6379/1"
+      CHIRPSTACK_API__SECRET:                              ${CHIRPSTACK_API_SECRET}
+      # MQTT credentials — overrides the values in chirpstack.toml and region_eu868.toml
+      # so no credentials need to be hard-coded or committed in those files.
+      CHIRPSTACK_INTEGRATION__MQTT__USERNAME:              ${MQTT_CHIRPSTACK_USERNAME}
+      CHIRPSTACK_INTEGRATION__MQTT__PASSWORD:              ${MQTT_CHIRPSTACK_PASSWORD}
+      CHIRPSTACK_REGIONS__EU868__GATEWAY__BACKEND__MQTT__USERNAME: ${MQTT_CHIRPSTACK_USERNAME}
+      CHIRPSTACK_REGIONS__EU868__GATEWAY__BACKEND__MQTT__PASSWORD: ${MQTT_CHIRPSTACK_PASSWORD}
+    networks:
+      - geedsan-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/ 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+networks:
+  geedsan-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  mosquitto_data:
+  mosquitto_log:
+  redis_data:
+  backend_reports:
+  backend_uploads:
+  backend_logs:
+  backups_data:
+  odoo_data:

@@ -17,7 +17,9 @@ const authenticate = async (req, res, next) => {
 };
 
 const authorize = (...roles) => (req, res, next) => {
-  if (!roles.includes(req.user.role)) return res.status(403).json({ error: 'Insufficient permissions' });
+  if (!roles.includes(req.user.role)) {
+    return res.status(403).json({ success: false, error: 'You do not have permission to access this resource.' });
+  }
   next();
 };
 

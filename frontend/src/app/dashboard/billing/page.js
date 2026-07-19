@@ -2,11 +2,11 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { billingAPI } from '../../../lib/api';
+import { billingAPI, tariffsAPI } from '../../../lib/api';
 import {
   FileText, Plus, ArrowRight, Search, Loader2, Play, Eye, History,
   Settings, CheckCircle, AlertTriangle, XCircle, ChevronDown, ChevronRight,
-  RefreshCw, Ban, Send, Zap,
+  RefreshCw, Ban, Send, Zap, DollarSign, Save, Percent,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -53,11 +53,12 @@ const Stat = ({ label, value, sub, accent }) => (
 // ── Tab config ────────────────────────────────────────────────────────────────
 
 const TABS = [
-  { id: 'invoices', label: 'Invoices',    icon: FileText },
-  { id: 'preview',  label: 'Preview',     icon: Eye      },
-  { id: 'run',      label: 'Run Billing', icon: Play     },
-  { id: 'history',  label: 'History',     icon: History  },
-  { id: 'settings', label: 'Settings',    icon: Settings },
+  { id: 'invoices', label: 'Invoices',    icon: FileText  },
+  { id: 'preview',  label: 'Preview',     icon: Eye       },
+  { id: 'run',      label: 'Run Billing', icon: Play      },
+  { id: 'history',  label: 'History',     icon: History   },
+  { id: 'tariffs',  label: 'Tariffs',     icon: DollarSign},
+  { id: 'settings', label: 'Settings',    icon: Settings  },
 ];
 
 // ── Invoices tab ──────────────────────────────────────────────────────────────
@@ -637,6 +638,100 @@ function SettingsTab() {
   );
 }
 
+// ── Tariffs Tab ───────────────────────────────────────────────────────────────
+
+function TariffsTab() {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(null); // tariff_code being edited
+  const [form, setForm] = useState({});
+
+  const { data: tariffs = [], isLoading } = useQuery({
+    queryKey: ['tariffs'],
+    queryFn: () => tariffsAPI.list().then(r => r.data),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ code, data }) => tariffsAPI.update(code, data),
+    onSuccess: () => {
+      toast.success('Tariff updated');
+      queryClient.invalidateQueries(['tariffs']);
+      setEditing(null);
+    },
+    onError: e => toast.error(e.response?.data?.error || 'Update failed'),
+  });
+
+  const startEdit = (t) => { setEditing(t.tariff_code); setForm({ ...t }); };
+  const field = (k) => ({ value: form[k] ?? '', onChange: e => setForm(f => ({ ...f, [k]: e.target.value })) });
+  const numInput = (k, label) => (
+    <div>
+      <label className="text-xs text-slate-400 block mb-1">{label}</label>
+      <input type="number" step="0.0001" min="0" className="input w-full text-sm" {...field(k)} />
+    </div>
+  );
+
+  if (isLoading) return <div className="flex justify-center p-12"><Loader2 className="w-6 h-6 text-primary-400 animate-spin" /></div>;
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-400">Configure tariff rates for each customer category. Changes apply to new invoices only.</p>
+      <div className="grid gap-4">
+        {tariffs.map(t => (
+          <div key={t.tariff_code} className="card-glow p-5">
+            {editing === t.tariff_code ? (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-white capitalize">{t.name || t.tariff_code}</h3>
+                  <span className="text-xs text-slate-500 font-mono">{t.tariff_code}</span>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                  {numInput('min_charge',    'Min Charge ($)')}
+                  {numInput('price_per_m3',  'Price/m³ ($)')}
+                  {numInput('service_fee',   'Service Fee ($)')}
+                  {numInput('vat_rate',      'VAT Rate (%)')}
+                  {numInput('penalty_rate',  'Penalty Rate (%)')}
+                  {numInput('discount_rate', 'Discount Rate (%)')}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => updateMutation.mutate({ code: t.tariff_code, data: { min_charge: Number(form.min_charge), price_per_m3: Number(form.price_per_m3), service_fee: Number(form.service_fee), vat_rate: Number(form.vat_rate), penalty_rate: Number(form.penalty_rate), discount_rate: Number(form.discount_rate) } })}
+                    disabled={updateMutation.isPending}
+                    className="btn-primary text-sm flex items-center gap-2"
+                  >
+                    {updateMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                    Save
+                  </button>
+                  <button onClick={() => setEditing(null)} className="btn-ghost text-sm">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 mb-2">
+                    <h3 className="font-semibold text-white capitalize">{t.name || t.tariff_code}</h3>
+                    <span className="text-xs font-mono text-slate-500 bg-slate-800 px-2 py-0.5 rounded">{t.tariff_code}</span>
+                    {!t.is_active && <span className="text-xs text-red-400 bg-red-500/10 px-2 py-0.5 rounded">Inactive</span>}
+                  </div>
+                  <div className="grid grid-cols-3 md:grid-cols-6 gap-x-6 gap-y-1 text-sm">
+                    <div><span className="text-slate-500 text-xs">Min charge</span><br /><span className="text-white font-medium">${Number(t.min_charge || 0).toFixed(2)}</span></div>
+                    <div><span className="text-slate-500 text-xs">Price/m³</span><br /><span className="text-white font-medium">${Number(t.price_per_m3 || 0).toFixed(4)}</span></div>
+                    <div><span className="text-slate-500 text-xs">Service fee</span><br /><span className="text-white font-medium">${Number(t.service_fee || 0).toFixed(2)}</span></div>
+                    <div><span className="text-slate-500 text-xs">VAT</span><br /><span className="text-white font-medium">{Number(t.vat_rate || 0).toFixed(1)}%</span></div>
+                    <div><span className="text-slate-500 text-xs">Penalty</span><br /><span className="text-white font-medium">{Number(t.penalty_rate || 0).toFixed(1)}%</span></div>
+                    <div><span className="text-slate-500 text-xs">Discount</span><br /><span className="text-white font-medium">{Number(t.discount_rate || 0).toFixed(1)}%</span></div>
+                  </div>
+                </div>
+                <button onClick={() => startEdit(t)} className="btn-ghost text-sm flex items-center gap-1 flex-shrink-0">
+                  <Settings className="w-3 h-3" /> Edit
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Billing Center root ───────────────────────────────────────────────────────
 
 export default function BillingCenterPage() {
@@ -676,6 +771,7 @@ export default function BillingCenterPage() {
         {activeTab === 'preview'  && <PreviewTab />}
         {activeTab === 'run'      && <RunBillingTab />}
         {activeTab === 'history'  && <HistoryTab />}
+        {activeTab === 'tariffs'  && <TariffsTab />}
         {activeTab === 'settings' && <SettingsTab />}
       </div>
     </div>

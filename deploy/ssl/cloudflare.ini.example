@@ -1,0 +1,25 @@
+# Cloudflare API Token for DNS-01 certificate validation.
+#
+# HOW TO CREATE A TOKEN
+# ─────────────────────
+# 1. Go to dash.cloudflare.com → My Profile → API Tokens → Create Token
+# 2. Choose "Create Custom Token"
+# 3. Set these permissions ONLY (principle of least privilege):
+#      Zone  ›  Zone  ›  Read
+#      Zone  ›  DNS   ›  Edit
+# 4. Under "Zone Resources", select:
+#      Include  ›  Specific zone  ›  geedsan.com
+# 5. Click "Continue to summary" → "Create Token"
+# 6. Copy the token — it is only shown once.
+#
+# SETUP
+# ─────
+# On the production server:
+#   sudo cp deploy/ssl/cloudflare.ini.example /etc/letsencrypt/cloudflare.ini
+#   sudo nano /etc/letsencrypt/cloudflare.ini    # paste your token
+#   sudo chmod 600 /etc/letsencrypt/cloudflare.ini
+#
+# DO NOT commit this file with a real token.
+# DO NOT use the Global API Key — the scoped token above is safer.
+
+dns_cloudflare_api_token = YOUR_CLOUDFLARE_API_TOKEN_HERE

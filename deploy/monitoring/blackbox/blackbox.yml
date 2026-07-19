@@ -1,0 +1,48 @@
+modules:
+
+  # ── HTTP 2xx — standard endpoint health + SSL cert expiry ─────────────────
+  http_2xx:
+    prober: http
+    timeout: 10s
+    http:
+      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+      valid_status_codes: []   # defaults to 2xx
+      method: GET
+      follow_redirects: true
+      fail_if_ssl: false
+      fail_if_not_ssl: false
+      no_follow_redirects: false
+      tls_config:
+        insecure_skip_verify: false
+      preferred_ip_protocol: "ip4"
+      ip_protocol_fallback: false
+
+  # ── HTTP any status — for endpoints that return non-2xx (ChirpStack gRPC) ──
+  http_any:
+    prober: http
+    timeout: 10s
+    http:
+      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+      # Accept any response as "up" — we only care the service is responding
+      valid_status_codes: [200, 301, 302, 400, 404, 405]
+      method: GET
+      follow_redirects: false
+      preferred_ip_protocol: "ip4"
+
+  # ── TCP connect — port reachability (MQTT, PostgreSQL ports) ──────────────
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: "ip4"
+      ip_protocol_fallback: false
+
+  # ── TLS verify — explicit certificate + chain check ───────────────────────
+  tls_connect:
+    prober: tcp
+    timeout: 10s
+    tcp:
+      tls: true
+      tls_config:
+        insecure_skip_verify: false
+      preferred_ip_protocol: "ip4"

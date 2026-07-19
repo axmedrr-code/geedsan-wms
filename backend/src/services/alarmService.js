@@ -9,7 +9,8 @@ const ALARM_SEVERITY = {
   water_leakage: 'warning', reverse_flow: 'warning', pipe_burst: 'critical',
   water_inlet_alarm: 'warning', water_return_alarm: 'warning', flow_alarm: 'warning',
   no_flow: 'info', communication_loss: 'warning', low_pressure: 'warning', high_pressure: 'critical',
-  abnormal_consumption: 'warning'
+  abnormal_consumption: 'warning',
+  no_flow: 'info'
 };
 const ALARM_MESSAGES = {
   low_battery: 'Battery voltage is below threshold.',
@@ -26,7 +27,8 @@ const ALARM_MESSAGES = {
   communication_loss: 'Device has not reported for an extended period.',
   low_pressure: 'Pipeline pressure is below the safe threshold.',
   high_pressure: 'Pipeline pressure exceeds the safe threshold.',
-  abnormal_consumption: 'Current flow is significantly above this meter\'s recent baseline.'
+  abnormal_consumption: 'Current flow is significantly above this meter\'s recent baseline.',
+  no_flow: 'No flow detected for an extended period on an active meter.'
 };
 
 // Pressure (T=0x40) is reported in kPa per the Shengda protocol.

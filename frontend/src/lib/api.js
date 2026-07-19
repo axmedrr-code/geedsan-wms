@@ -57,6 +57,8 @@ export const dashboardAPI = {
   getBillingStats: () => api.get('/dashboard/billing-stats'),
   getRevenueChart: (p) => api.get('/dashboard/revenue-chart', { params: p }),
   getTopCustomers: () => api.get('/dashboard/top-customers'),
+  // Live operations dashboard
+  getOpsStats: () => api.get('/dashboard/ops'),
 };
 
 export const metersAPI = {
@@ -65,9 +67,16 @@ export const metersAPI = {
   create: (d) => api.post('/meters', d),
   update: (id, d) => api.put(`/meters/${id}`, d),
   delete: (id) => api.delete(`/meters/${id}`),
+  replaceMeter: (id, d) => api.post(`/meters/${id}/replace`, d),
   getReadings: (id, p) => api.get(`/meters/${id}/readings`, { params: p }),
   getPackets: (id, p) => api.get(`/meters/${id}/packets`, { params: p }),
-  getSignal: (id, p) => api.get(`/meters/${id}/signal`, { params: p })
+  getSignal: (id, p) => api.get(`/meters/${id}/signal`, { params: p }),
+  getConsumption: (id, p) => api.get(`/meters/${id}/consumption`, { params: p }),
+  getBillingPeriodConsumption: (id, p) => api.get(`/meters/${id}/consumption/billing-period`, { params: p }),
+  getHealth: (id) => api.get(`/meters/${id}/health`),
+  getLeaks: (id, p) => api.get(`/meters/${id}/leaks`, { params: p }),
+  detectLeaks: (id) => api.post(`/meters/${id}/leaks/detect`),
+  updateLeak: (id, leakId, d) => api.patch(`/meters/${id}/leaks/${leakId}`, d),
 };
 
 export const gatewaysAPI = {
@@ -106,6 +115,28 @@ export const billingAPI = {
   getRun:         (id)    => api.get(`/billing/runs/${id}`),
   cancelRun:      (id, d) => api.post(`/billing/runs/${id}/cancel`, d),
   postRun:        (id)    => api.post(`/billing/runs/${id}/post`),
+  // Stats
+  stats:          ()      => api.get('/billing/stats'),
+  // Direct invoice generation
+  generateForCustomer:  (id, d) => api.post(`/billing/generate/customer/${id}`, d),
+  generateForZone:      (id, d) => api.post(`/billing/generate/zone/${id}`, d),
+  generateForSelected:  (d)     => api.post('/billing/generate/selected', d),
+};
+
+export const tariffsAPI = {
+  list:   ()          => api.get('/tariffs'),
+  get:    (code)      => api.get(`/tariffs/${code}`),
+  create: (d)         => api.post('/tariffs', d),
+  update: (code, d)   => api.put(`/tariffs/${code}`, d),
+};
+
+export const billingReportsAPI = {
+  customerStatement: (id, p) => api.get(`/billing-reports/customer-statement/${id}`, { params: p }),
+  zone:              (id, p) => api.get(`/billing-reports/zone/${id}`, { params: p }),
+  aging:             ()      => api.get('/billing-reports/aging'),
+  unpaid:            (p)     => api.get('/billing-reports/unpaid', { params: p }),
+  consumption:       (p)     => api.get('/billing-reports/consumption', { params: p }),
+  revenue:           (p)     => api.get('/billing-reports/revenue', { params: p }),
 };
 
 export const billingCyclesAPI = {
@@ -161,6 +192,20 @@ export const notificationsAPI = {
   getHistory: () => api.get('/notifications/history')
 };
 
+// Public portal API — no auth headers, separate axios instance
+const _publicApi = axios.create({ baseURL: `${API_BASE}/api/portal`, headers: { 'Content-Type': 'application/json' } });
+
+export const portalAPI = {
+  providers:       ()             => _publicApi.get('/providers'),
+  lookup:          (houseNumber)  => _publicApi.get('/lookup', { params: { house_number: houseNumber } }),
+  invoices:        (customerId)   => _publicApi.get(`/invoices/${customerId}`),
+  checkout:        (d)            => _publicApi.post('/checkout', d),
+  getSession:      (id)           => _publicApi.get(`/session/${id}`),
+  confirmSession:  (id)           => _publicApi.post(`/session/${id}/confirm`),
+  // Admin
+  listSessions:    (p)            => api.get('/portal/sessions', { params: p }),
+};
+
 export const settingsAPI = {
   get:           ()       => api.get('/settings'),
   update:        (k, v)   => api.put(`/settings/${k}`, { value: v }),
@@ -173,6 +218,23 @@ export const settingsAPI = {
   testChirpStack:()       => api.post('/settings/test/chirpstack'),
   testOdoo:      ()       => api.post('/settings/test/odoo'),
   triggerBackup: ()       => api.post('/settings/backup'),
+};
+
+export const zonesAPI = {
+  list:   (p)     => api.get('/zones', { params: p }),
+  get:    (id)    => api.get(`/zones/${id}`),
+  create: (d)     => api.post('/zones', d),
+  update: (id, d) => api.put(`/zones/${id}`, d),
+  delete: (id)    => api.delete(`/zones/${id}`),
+};
+
+export const paymentsAPI = {
+  list:          (p)     => api.get('/payments', { params: p }),
+  get:           (id)    => api.get(`/payments/${id}`),
+  receipt:       (id)    => api.get(`/payments/${id}/receipt`),
+  stats:         ()      => api.get('/payments/stats'),
+  manualPayment: (d)     => api.post('/payments/manual', d),
+  receiptUrl:    (id)    => `${API_BASE}/api/payments/${id}/receipt.html`,
 };
 
 export const odooAPI = {

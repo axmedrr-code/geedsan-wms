@@ -8,7 +8,8 @@ import {
   ArrowLeft, Droplets, Battery, Signal, Clock, Gauge,
   AlertTriangle, CheckCircle, RefreshCw,
   Activity, Brain, Lock, Unlock, RotateCcw,
-  Loader2, Info, FlaskConical, Radio, Inbox
+  Loader2, Info, FlaskConical, Radio, Inbox,
+  TrendingUp, TrendingDown, Minus, ShieldAlert, Zap
 } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line, XAxis, YAxis,
@@ -33,8 +34,26 @@ const TABS = [
   { key: 'readings', label: 'Readings History' },
   { key: 'diagnostics', label: 'Diagnostics' },
   { key: 'alarms', label: 'Alarms' },
+  { key: 'consumption', label: 'Consumption' },
+  { key: 'leaks', label: 'Leaks' },
   { key: 'valve', label: 'Valve Control' }
 ];
+
+const LEAK_TYPE_LABELS = {
+  continuous_flow: 'Continuous Flow',
+  night_flow: 'Night Flow',
+  abnormal_consumption: 'Abnormal Consumption',
+  reverse_flow: 'Reverse Flow',
+  burst_pipe: 'Burst Pipe',
+  pressure_drop: 'Pressure Drop',
+};
+
+const SEVERITY_COLORS = {
+  critical: 'text-red-400 bg-red-500/10 border-red-500/20',
+  high:     'text-orange-400 bg-orange-500/10 border-orange-500/20',
+  medium:   'text-amber-400 bg-amber-500/10 border-amber-500/20',
+  low:      'text-blue-400 bg-blue-500/10 border-blue-500/20',
+};
 
 function ValveButton({ label, icon: Icon, onClick, loading, variant = 'secondary', disabled }) {
   const cls = {
@@ -123,6 +142,50 @@ export default function MeterDetailPage() {
     queryKey: ['meter-packets', id],
     queryFn: () => metersAPI.getPackets(id, { limit: 50 }).then(r => r.data?.data || []),
     enabled: !!id
+  });
+
+  const [consumptionPeriod, setConsumptionPeriod] = useState('daily');
+  const { data: consumptionData } = useQuery({
+    queryKey: ['meter-consumption', id, consumptionPeriod],
+    queryFn: () => metersAPI.getConsumption(id, { period: consumptionPeriod }).then(r => r.data),
+    enabled: !!id && activeTab === 'consumption',
+    staleTime: 60000
+  });
+
+  const { data: billingPeriodData } = useQuery({
+    queryKey: ['meter-billing-period', id],
+    queryFn: () => metersAPI.getBillingPeriodConsumption(id).then(r => r.data),
+    enabled: !!id && activeTab === 'consumption',
+    staleTime: 60000
+  });
+
+  const { data: healthData } = useQuery({
+    queryKey: ['meter-health', id],
+    queryFn: () => metersAPI.getHealth(id).then(r => r.data),
+    enabled: !!id,
+    staleTime: 120000
+  });
+
+  const { data: leaksData, refetch: refetchLeaks } = useQuery({
+    queryKey: ['meter-leaks', id],
+    queryFn: () => metersAPI.getLeaks(id).then(r => r.data),
+    enabled: !!id && activeTab === 'leaks',
+    staleTime: 30000
+  });
+
+  const resolveLeakMutation = useMutation({
+    mutationFn: ({ leakId, status, notes }) => metersAPI.updateLeak(id, leakId, { status, notes }),
+    onSuccess: () => { toast.success('Leak event updated'); refetchLeaks(); },
+    onError: () => toast.error('Failed to update leak event')
+  });
+
+  const triggerLeakDetection = useMutation({
+    mutationFn: () => metersAPI.detectLeaks(id),
+    onSuccess: (res) => {
+      toast.success(`Detection complete: ${res.data.detected} new event(s)`);
+      refetchLeaks();
+    },
+    onError: () => toast.error('Leak detection failed')
   });
 
   useRealtimeEvents([['meter-detail', id], ['meter-readings', id], ['meter-signal', id], ['meter-packets', id]]);
@@ -432,6 +495,223 @@ export default function MeterDetailPage() {
                       {alarm.triggered_at ? format(new Date(alarm.triggered_at), 'MMM d, yyyy HH:mm') : ''}
                     </p>
                     {alarm.message && <p className="text-xs text-slate-500 mt-0.5">{alarm.message}</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'consumption' && (
+        <div className="space-y-6">
+          {/* Billing period summary */}
+          {billingPeriodData && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <StatCard icon={Droplets} label="This Month"
+                value={`${billingPeriodData.consumption_m3?.toFixed(2) ?? '—'} m³`}
+                color="text-primary-400" />
+              <StatCard icon={Activity} label="Daily Average"
+                value={`${billingPeriodData.daily_average_m3?.toFixed(3) ?? '—'} m³`}
+                color="text-emerald-400" />
+              <StatCard
+                icon={billingPeriodData.change_percent > 0 ? TrendingUp : billingPeriodData.change_percent < 0 ? TrendingDown : Minus}
+                label="vs Last Month"
+                value={billingPeriodData.change_percent != null ? `${billingPeriodData.change_percent > 0 ? '+' : ''}${billingPeriodData.change_percent}%` : '—'}
+                color={billingPeriodData.change_percent > 10 ? 'text-red-400' : billingPeriodData.change_percent < 0 ? 'text-emerald-400' : 'text-amber-400'}
+              />
+              <StatCard icon={Gauge} label="Projected Month"
+                value={`${billingPeriodData.projected_month_total_m3?.toFixed(2) ?? '—'} m³`}
+                color="text-cyan-400" />
+            </div>
+          )}
+
+          {/* Period selector */}
+          <div className="card-glow p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-white">Consumption History</h3>
+              <div className="flex gap-1">
+                {['daily', 'weekly', 'monthly', 'yearly'].map(p => (
+                  <button
+                    key={p}
+                    onClick={() => setConsumptionPeriod(p)}
+                    className={`px-3 py-1 text-xs rounded font-medium transition-colors capitalize ${
+                      consumptionPeriod === p
+                        ? 'bg-primary-600 text-white'
+                        : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >{p}</button>
+                ))}
+              </div>
+            </div>
+
+            {!consumptionData?.data?.length ? (
+              <div className="text-center py-12 text-slate-500 text-sm">
+                No consumption data for this period.<br />
+                <span className="text-xs">Data is aggregated nightly; check back after the meter has been active for at least one full day.</span>
+              </div>
+            ) : (
+              <>
+                <ResponsiveContainer width="100%" height={240}>
+                  <BarChart data={consumptionData.data} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                    <XAxis dataKey="period" tick={{ fill: '#64748b', fontSize: 10 }} />
+                    <YAxis tick={{ fill: '#64748b', fontSize: 10 }} unit=" m³" />
+                    <Tooltip
+                      contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
+                      formatter={(v) => [`${parseFloat(v).toFixed(3)} m³`, 'Consumption']}
+                    />
+                    <Bar dataKey="consumption_m3" fill="#42A5F5" radius={[3, 3, 0, 0]} name="Consumption (m³)" />
+                  </BarChart>
+                </ResponsiveContainer>
+
+                {/* Summary stats */}
+                <div className="mt-4 grid grid-cols-3 gap-4 pt-4 border-t border-slate-800">
+                  <div className="text-center">
+                    <p className="text-xs text-slate-500">Total</p>
+                    <p className="text-lg font-bold text-white font-mono">{consumptionData.total_consumption_m3?.toFixed(2)} m³</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-xs text-slate-500">Avg / Period</p>
+                    <p className="text-lg font-bold text-emerald-400 font-mono">{consumptionData.average_per_period_m3?.toFixed(3)} m³</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-xs text-slate-500">Trend</p>
+                    <p className={`text-sm font-semibold capitalize ${
+                      consumptionData.trend === 'increasing' ? 'text-red-400' :
+                      consumptionData.trend === 'decreasing' ? 'text-emerald-400' : 'text-slate-400'
+                    }`}>{consumptionData.trend?.replace('_', ' ') ?? '—'}</p>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Device health */}
+          {healthData && (
+            <div className="card-glow p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <Zap className="w-4 h-4 text-amber-400" />
+                <h3 className="font-semibold text-white">Device Health</h3>
+                <span className={`ml-auto text-2xl font-bold font-mono ${
+                  healthData.overall_score >= 85 ? 'text-emerald-400' :
+                  healthData.overall_score >= 70 ? 'text-primary-400' :
+                  healthData.overall_score >= 50 ? 'text-amber-400' : 'text-red-400'
+                }`}>{healthData.overall_score}</span>
+                <span className={`text-xs capitalize px-2 py-0.5 rounded border ${
+                  healthData.grade === 'excellent' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
+                  healthData.grade === 'good' ? 'text-primary-400 bg-primary-500/10 border-primary-500/20' :
+                  healthData.grade === 'fair' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
+                  'text-red-400 bg-red-500/10 border-red-500/20'
+                }`}>{healthData.grade}</span>
+              </div>
+              <div className="space-y-3">
+                {Object.entries(healthData.components).map(([key, comp]) => (
+                  <div key={key}>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-400 capitalize">{key}</span>
+                      <span className="text-slate-300">{comp.score != null ? comp.score : '—'}</span>
+                    </div>
+                    <div className="h-1.5 bg-slate-800 rounded-full">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          (comp.score ?? 0) >= 70 ? 'bg-emerald-500' :
+                          (comp.score ?? 0) >= 50 ? 'bg-amber-500' : 'bg-red-500'
+                        }`}
+                        style={{ width: `${comp.score ?? 0}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'leaks' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-white font-semibold">Leak Events</h3>
+              <p className="text-xs text-slate-500 mt-0.5">Server-side anomaly detection across 6 algorithms</p>
+            </div>
+            <button
+              onClick={() => triggerLeakDetection.mutate()}
+              disabled={triggerLeakDetection.isPending}
+              className="btn-primary text-sm flex items-center gap-2"
+            >
+              {triggerLeakDetection.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldAlert className="w-4 h-4" />}
+              Scan Now
+            </button>
+          </div>
+
+          {!leaksData?.data?.length ? (
+            <div className="card-glow p-10 text-center">
+              <CheckCircle className="w-10 h-10 mx-auto mb-3 text-emerald-400/40" />
+              <p className="text-slate-400 font-medium">No leak events detected</p>
+              <p className="text-xs text-slate-600 mt-1">Scans run hourly automatically. Click "Scan Now" to run immediately.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {leaksData.data.map(leak => (
+                <div key={leak.id} className={`card-glow p-4 border-l-4 ${
+                  leak.severity === 'critical' ? 'border-l-red-500' :
+                  leak.severity === 'high' ? 'border-l-orange-500' :
+                  leak.severity === 'medium' ? 'border-l-amber-500' : 'border-l-blue-500'
+                }`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-semibold text-white">
+                          {LEAK_TYPE_LABELS[leak.detection_type] || leak.detection_type}
+                        </span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full border capitalize ${SEVERITY_COLORS[leak.severity]}`}>
+                          {leak.severity}
+                        </span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full border capitalize ${
+                          leak.status === 'active' ? 'text-red-400 bg-red-500/10 border-red-500/20' :
+                          leak.status === 'resolved' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
+                          'text-slate-400 bg-slate-700/50 border-slate-600'
+                        }`}>{leak.status}</span>
+                        <span className="text-xs text-slate-500 ml-auto">
+                          AI: {(parseFloat(leak.ai_score) * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1 leading-relaxed">{leak.ai_analysis}</p>
+                      {leak.evidence && (
+                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                          {Object.entries(leak.evidence).filter(([k]) => !['window_start','window_end','date'].includes(k)).map(([k, v]) => (
+                            <span key={k} className="text-xs text-slate-500">
+                              <span className="text-slate-600">{k.replace(/_/g, ' ')}:</span> {typeof v === 'number' ? v.toFixed ? v.toFixed(2) : v : v}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <p className="text-xs text-slate-600 mt-2">
+                        Detected {leak.detected_at ? format(new Date(leak.detected_at), 'MMM d, yyyy HH:mm') : '—'}
+                        {leak.resolved_by_name && ` · Resolved by ${leak.resolved_by_name}`}
+                      </p>
+                    </div>
+
+                    {leak.status === 'active' && canControl && (
+                      <div className="flex flex-col gap-1.5 flex-shrink-0">
+                        <button
+                          onClick={() => resolveLeakMutation.mutate({ leakId: leak.id, status: 'resolved' })}
+                          disabled={resolveLeakMutation.isPending}
+                          className="text-xs px-2 py-1 rounded bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 border border-emerald-600/30 transition-colors"
+                        >
+                          Resolve
+                        </button>
+                        <button
+                          onClick={() => resolveLeakMutation.mutate({ leakId: leak.id, status: 'false_positive' })}
+                          disabled={resolveLeakMutation.isPending}
+                          className="text-xs px-2 py-1 rounded bg-slate-700/50 text-slate-400 hover:bg-slate-700 border border-slate-600 transition-colors"
+                        >
+                          False +
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}

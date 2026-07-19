@@ -1,0 +1,11 @@
+[[regions]]
+id="eu868"
+description="EU868"
+common_name="EU868"
+
+[regions.gateway.backend.mqtt]
+# Hostname — resolves correctly on Linux Docker bridge (no static IPs needed)
+server="tcp://mosquitto:1883/"
+# username and password are injected via
+# CHIRPSTACK_REGIONS__EU868__GATEWAY__BACKEND__MQTT__USERNAME/PASSWORD
+# environment variables in docker-compose.prod.yml

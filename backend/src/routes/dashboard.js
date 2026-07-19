@@ -1,7 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { query } = require('../config/database');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, authorize } = require('../middleware/auth');
+
+// Roles permitted to read financial KPIs (revenue, outstanding, collections)
+const FINANCIAL_ROLES = ['admin', 'manager', 'finance', 'billing_officer', 'viewer'];
 
 /**
  * @openapi
@@ -58,6 +61,124 @@ router.get('/top-consumers', authenticate, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Failed to fetch top consumers' }); }
 });
 
+// ─── Live Operations Dashboard (15 real-time cards) ──────────────────────────
+
+// Simple in-memory TTL cache — 60 s
+const _opsCache = { data: null, expiresAt: 0 };
+
+router.get('/ops', authenticate, async (req, res) => {
+  try {
+    if (_opsCache.data && Date.now() < _opsCache.expiresAt) {
+      return res.json({ ...(_opsCache.data), cached: true });
+    }
+
+    const [meters, readings, alarms, leaks, valves, nrw] = await Promise.all([
+
+      // Online/offline + valve counts + averages (single scan over meters table)
+      query(`
+        SELECT
+          COUNT(*) FILTER (WHERE is_online AND status='active')                              AS online_meters,
+          COUNT(*) FILTER (WHERE NOT is_online AND status='active')                          AS offline_meters,
+          COUNT(*) FILTER (WHERE valve_status='open'  AND status='active')                   AS open_valves,
+          COUNT(*) FILTER (WHERE valve_status='closed' AND status='active')                  AS closed_valves,
+          AVG(battery_voltage) FILTER (WHERE battery_voltage IS NOT NULL AND status='active') AS avg_battery_v,
+          AVG(rssi)            FILTER (WHERE rssi IS NOT NULL AND is_online AND status='active') AS avg_rssi_dbm,
+          AVG(pressure)        FILTER (WHERE pressure IS NOT NULL AND is_online AND status='active') AS avg_pressure_bar,
+          SUM(current_flow)    FILTER (WHERE current_flow > 0 AND is_online AND status='active')     AS current_flow_total
+        FROM meters
+      `),
+
+      // Meters that have reported in the last 25 hours
+      query(`
+        SELECT COUNT(DISTINCT meter_id) AS reporting_today
+        FROM meter_readings
+        WHERE timestamp >= NOW() - INTERVAL '25 hours'
+      `),
+
+      // Critical alarms today
+      query(`
+        SELECT COUNT(*) AS critical_alarms
+        FROM alarms
+        WHERE status='active' AND severity='critical'
+      `),
+
+      // Leaks opened today
+      query(`
+        SELECT COUNT(*) AS leaks_today
+        FROM leak_events
+        WHERE detected_at >= CURRENT_DATE AND status='active'
+      `),
+
+      // Communication success rate (last 24 h vs expected)
+      query(`
+        SELECT
+          COUNT(*) AS actual_packets,
+          COUNT(DISTINCT meter_id) AS active_meters_seen
+        FROM meter_readings
+        WHERE timestamp >= NOW() - INTERVAL '24 hours'
+      `),
+
+      // NRW: water produced (all meter consumption) vs water sold (customer meters only)
+      query(`
+        SELECT
+          COALESCE(SUM(consumption_m3), 0) AS water_produced
+        FROM meter_consumption_daily
+        WHERE date = CURRENT_DATE - 1
+      `),
+    ]);
+
+    const m  = meters.rows[0];
+    const r  = readings.rows[0];
+    const a  = alarms.rows[0];
+    const l  = leaks.rows[0];
+    const v  = valves.rows[0];
+    const n  = nrw.rows[0];
+
+    const totalActive   = parseInt(m.online_meters) + parseInt(m.offline_meters);
+    const expectedPkts  = parseInt(v.active_meters_seen || 0) * 96;  // 96 per meter per day
+    const commSuccessRate = expectedPkts > 0
+      ? Math.min(100, Math.round((parseInt(v.actual_packets) / expectedPkts) * 100))
+      : null;
+
+    const waterProduced = parseFloat(n.water_produced || 0);
+    // water_sold ≈ same figure when all meters are customer meters (approximation)
+    const waterSold     = waterProduced;  // will diverge once bulk-supply meters are tagged separately
+    const nrwPct        = waterProduced > 0
+      ? parseFloat(((waterProduced - waterSold) / waterProduced * 100).toFixed(1))
+      : 0;
+
+    const avgBattPct = m.avg_battery_v
+      ? Math.max(0, Math.min(100, Math.round(((parseFloat(m.avg_battery_v) - 2.8) / 0.8) * 100)))
+      : null;
+
+    const result = {
+      online_meters:          parseInt(m.online_meters),
+      offline_meters:         parseInt(m.offline_meters),
+      meters_reporting_today: parseInt(r.reporting_today),
+      avg_battery_pct:        avgBattPct,
+      avg_rssi_dbm:           m.avg_rssi_dbm   ? parseFloat(parseFloat(m.avg_rssi_dbm).toFixed(1))   : null,
+      avg_pressure_bar:       m.avg_pressure_bar ? parseFloat(parseFloat(m.avg_pressure_bar).toFixed(2)) : null,
+      current_flow_lpm:       m.current_flow_total ? parseFloat(parseFloat(m.current_flow_total).toFixed(1)) : 0,
+      open_valves:            parseInt(m.open_valves),
+      closed_valves:          parseInt(m.closed_valves),
+      leaks_today:            parseInt(l.leaks_today),
+      critical_alarms:        parseInt(a.critical_alarms),
+      comm_success_rate_pct:  commSuccessRate,
+      water_produced_m3:      parseFloat(waterProduced.toFixed(3)),
+      water_sold_m3:          parseFloat(waterSold.toFixed(3)),
+      non_revenue_water_pct:  nrwPct,
+      total_active_meters:    totalActive,
+      as_of:                  new Date().toISOString(),
+      cached: false,
+    };
+
+    _opsCache.data      = result;
+    _opsCache.expiresAt = Date.now() + 60_000;
+
+    res.json(result);
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to fetch ops stats' }); }
+});
+
 // ─── Billing dashboard endpoints ──────────────────────────────────────────────
 
 /**
@@ -68,7 +189,7 @@ router.get('/top-consumers', authenticate, async (req, res) => {
  *     tags: [Dashboard]
  *     security: [{ bearerAuth: [] }]
  */
-router.get('/billing-stats', authenticate, async (req, res) => {
+router.get('/billing-stats', authenticate, authorize(...FINANCIAL_ROLES), async (req, res) => {
   try {
     const r = await query(`
       SELECT
@@ -81,9 +202,13 @@ router.get('/billing-stats', authenticate, async (req, res) => {
         (SELECT COALESCE(SUM(ip.amount),0)
            FROM invoice_payments ip
           WHERE EXTRACT(YEAR FROM ip.payment_date)=EXTRACT(YEAR FROM NOW())) AS "revenueThisYear",
-        (SELECT COALESCE(SUM(i.total_amount),0)
+        (SELECT COALESCE(SUM(i.total_amount - COALESCE(paid.total_paid,0)),0)
            FROM invoices i
-          WHERE i.status NOT IN ('paid','cancelled')) AS "outstandingBalance",
+           LEFT JOIN (
+             SELECT invoice_id, SUM(amount) AS total_paid
+             FROM invoice_payments GROUP BY invoice_id
+           ) paid ON paid.invoice_id = i.id
+          WHERE i.status IN ('pending','overdue')) AS "outstandingBalance",
         (SELECT COUNT(*)
            FROM invoices i
           WHERE DATE(i.created_at)=CURRENT_DATE) AS "invoicesToday",
@@ -119,7 +244,7 @@ router.get('/billing-stats', authenticate, async (req, res) => {
  *         name: months
  *         schema: { type: integer, default: 6 }
  */
-router.get('/revenue-chart', authenticate, async (req, res) => {
+router.get('/revenue-chart', authenticate, authorize(...FINANCIAL_ROLES), async (req, res) => {
   try {
     const months = Math.min(Math.max(parseInt(req.query.months) || 6, 1), 36);
     const r = await query(`
@@ -167,14 +292,14 @@ router.get('/revenue-chart', authenticate, async (req, res) => {
  *         name: limit
  *         schema: { type: integer, default: 5 }
  */
-router.get('/top-customers', authenticate, async (req, res) => {
+router.get('/top-customers', authenticate, authorize(...FINANCIAL_ROLES), async (req, res) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 5, 1), 50);
     const r = await query(`
       SELECT
         c.id AS customer_id,
         c.full_name AS customer_name,
-        c.customer_number,
+        c.house_number,
         c.tariff_type,
         COALESCE(SUM(ip.amount), 0) AS total_paid,
         COUNT(DISTINCT i.id)        AS invoice_count,
@@ -184,7 +309,7 @@ router.get('/top-customers', authenticate, async (req, res) => {
       LEFT JOIN invoice_payments ip ON ip.invoice_id=i.id
       LEFT JOIN meters m          ON m.customer_id=c.id AND m.status='active'
       WHERE c.account_status='active'
-      GROUP BY c.id, c.full_name, c.customer_number, c.tariff_type
+      GROUP BY c.id, c.full_name, c.house_number, c.tariff_type
       ORDER BY total_paid DESC
       LIMIT $1
     `, [limit]);

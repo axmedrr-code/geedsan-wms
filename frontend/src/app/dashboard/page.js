@@ -1,16 +1,17 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Gauge, Wifi, WifiOff, Droplets, AlertTriangle, Battery,
-  TrendingUp, TrendingDown, Activity, RefreshCw, Users, Zap,
-  DollarSign, Receipt, CreditCard, Clock
+  TrendingUp, TrendingDown, Activity, RefreshCw,
+  DollarSign, Receipt, CreditCard, Clock, XCircle, Timer,
+  FileText, BarChart2, CheckCircle, Lock
 } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts';
-import { dashboardAPI } from '../../lib/api';
+import { dashboardAPI, paymentsAPI, billingAPI } from '../../lib/api';
 import { useRealtimeEvents } from '../../lib/useRealtimeEvents';
 import { format } from 'date-fns';
 import Link from 'next/link';
@@ -67,6 +68,21 @@ function StatCard({ icon: Icon, label, value, sub, color = 'primary', trend }) {
   );
 }
 
+// Returns true when an axios error is a 403 Forbidden
+const is403 = (err) => err?.response?.status === 403;
+
+function FinancialAccessDenied({ section }) {
+  return (
+    <div className="flex items-center gap-3 p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400">
+      <Lock className="w-5 h-5 flex-shrink-0" />
+      <div>
+        <p className="text-sm font-medium">Access Denied — {section}</p>
+        <p className="text-xs text-red-400/70 mt-0.5">Your role does not have permission to view financial data. Contact your administrator.</p>
+      </div>
+    </div>
+  );
+}
+
 const CustomTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
   return (
@@ -116,24 +132,38 @@ export default function DashboardPage() {
     refetchInterval: 60000
   });
 
-  const { data: billingStats } = useQuery({
+  const { data: billingStats, error: billingStatsError } = useQuery({
     queryKey: ['billing-stats', refreshKey],
-    queryFn: () => dashboardAPI.getBillingStats().then(r => r.data).catch(() => null),
+    queryFn: () => dashboardAPI.getBillingStats().then(r => r.data),
     refetchInterval: 60000,
     retry: false,
   });
 
-  const { data: revenueChart } = useQuery({
+  const { data: revenueChart, error: revenueChartError } = useQuery({
     queryKey: ['revenue-chart', refreshKey],
-    queryFn: () => dashboardAPI.getRevenueChart({ months: 6 }).then(r => r.data).catch(() => []),
+    queryFn: () => dashboardAPI.getRevenueChart({ months: 6 }).then(r => r.data),
     refetchInterval: 120000,
     retry: false,
   });
 
-  const { data: topCustomers } = useQuery({
+  const { data: topCustomers, error: topCustomersError } = useQuery({
     queryKey: ['top-customers', refreshKey],
-    queryFn: () => dashboardAPI.getTopCustomers().then(r => r.data).catch(() => []),
+    queryFn: () => dashboardAPI.getTopCustomers().then(r => r.data),
     refetchInterval: 120000,
+    retry: false,
+  });
+
+  const { data: paymentStats, error: paymentStatsError } = useQuery({
+    queryKey: ['payment-stats', refreshKey],
+    queryFn: () => paymentsAPI.stats().then(r => r.data),
+    refetchInterval: 30000,
+    retry: false,
+  });
+
+  const { data: billingLiveStats, error: billingLiveStatsError } = useQuery({
+    queryKey: ['billing-live-stats', refreshKey],
+    queryFn: () => billingAPI.stats().then(r => r.data),
+    refetchInterval: 30000,
     retry: false,
   });
 
@@ -211,27 +241,73 @@ export default function DashboardPage() {
       </div>
 
       {/* Revenue / Billing Stats */}
-      {billingStats && (
+      {(billingStats || billingStatsError) && (
         <div>
           <div className="flex items-center gap-2 mb-3">
             <DollarSign className="w-4 h-4 text-emerald-400" />
             <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Revenue & Billing</h2>
-            <Link href="/dashboard/billing" className="ml-auto text-xs text-primary-400 hover:text-primary-300">View all →</Link>
+            {!is403(billingStatsError) && <Link href="/dashboard/billing" className="ml-auto text-xs text-primary-400 hover:text-primary-300">View all →</Link>}
           </div>
+          {is403(billingStatsError) ? <FinancialAccessDenied section="Revenue & Billing" /> : (
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-            <StatCard icon={DollarSign}  label="Today's Revenue"   value={`$${Number(billingStats.revenueToday || 0).toFixed(0)}`}       color="green"   />
-            <StatCard icon={TrendingUp}  label="Monthly Revenue"   value={`$${Number(billingStats.revenueThisMonth || 0).toFixed(0)}`}   color="primary" />
-            <StatCard icon={Clock}       label="Outstanding"       value={`$${Number(billingStats.outstandingBalance || 0).toFixed(0)}`} color="amber"   />
-            <StatCard icon={Receipt}     label="Invoices Today"    value={billingStats.invoicesToday ?? 0}                               color="cyan"    />
-            <StatCard icon={CreditCard}  label="Payments Today"    value={billingStats.paymentsToday ?? 0}                              color="purple"  />
+            <StatCard icon={DollarSign}  label="Today's Revenue"   value={`$${Number(billingStats?.revenueToday || 0).toFixed(0)}`}       color="green"   />
+            <StatCard icon={TrendingUp}  label="Monthly Revenue"   value={`$${Number(billingStats?.revenueThisMonth || 0).toFixed(0)}`}   color="primary" />
+            <StatCard icon={Clock}       label="Outstanding Receivables" value={`$${Number(billingStats?.outstandingBalance || 0).toFixed(0)}`} sub="Net unpaid invoices" color="amber"   />
+            <StatCard icon={Receipt}     label="Invoices Today"    value={billingStats?.invoicesToday ?? 0}                               color="cyan"    />
+            <StatCard icon={CreditCard}  label="Payments Today"    value={billingStats?.paymentsToday ?? 0}                              color="purple"  />
           </div>
+          )}
         </div>
       )}
 
-      {/* Revenue Trend + Top Customers (only shown when data exists) */}
-      {(revenueChart?.length > 0 || topCustomers?.length > 0) && (
+      {/* Payment Stats Live Cards */}
+      {(paymentStats || paymentStatsError) && (
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <CreditCard className="w-4 h-4 text-purple-400" />
+            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Payments</h2>
+            <Link href="/dashboard/payments" className="ml-auto text-xs text-primary-400 hover:text-primary-300">View all →</Link>
+          </div>
+          {is403(paymentStatsError) ? <FinancialAccessDenied section="Payments" /> : (
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+            <StatCard icon={CreditCard}  label="Payments Today"    value={paymentStats?.today_count ?? 0}                                           color="purple" />
+            <StatCard icon={DollarSign}  label="Collections Today"  value={`$${Number(paymentStats?.today_revenue || 0).toFixed(0)}`}              color="green"  sub="Gateway receipts" />
+            <StatCard icon={TrendingUp}  label="Collection Rate"   value={`${Number(paymentStats?.collection_rate || 0).toFixed(1)}%`}              color="cyan"   />
+            <StatCard icon={XCircle}     label="Failed Payments"   value={paymentStats?.failed_today ?? 0}                                          color="red"    />
+            <StatCard icon={Timer}       label="Pending Payments"  value={paymentStats?.pending_count ?? 0}                                         color="primary" />
+            <StatCard icon={BarChart2}   label="Avg Payment"       value={`$${Number(paymentStats?.avg_payment || 0).toFixed(0)}`}                  color="cyan"  sub="This month" />
+          </div>
+          )}
+        </div>
+      )}
+
+      {/* Billing Live Cards */}
+      {(billingLiveStats || billingLiveStatsError) && (
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <FileText className="w-4 h-4 text-cyan-400" />
+            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Billing</h2>
+            {!is403(billingLiveStatsError) && <Link href="/dashboard/billing" className="ml-auto text-xs text-primary-400 hover:text-primary-300">Billing center →</Link>}
+          </div>
+          {is403(billingLiveStatsError) ? <FinancialAccessDenied section="Billing" /> : (
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+            <StatCard icon={FileText}    label="Bills Generated Today" value={billingLiveStats?.bills_today ?? 0}                                             color="cyan"    />
+            <StatCard icon={DollarSign}  label="Avg Bill Value"        value={`$${Number(billingLiveStats?.avg_bill_value || 0).toFixed(0)}`}                 color="amber"   sub="This month" />
+            <StatCard icon={XCircle}     label="Overdue Customers"     value={billingLiveStats?.overdue_customers ?? 0}                                       color="red"     />
+            <StatCard icon={Clock}       label="Due Today"             value={billingLiveStats?.bills_due_today ?? 0}                                         color="purple"  />
+            <StatCard icon={BarChart2}   label="Monthly Bills"         value={billingLiveStats?.monthly_bills ?? 0}                                           color="primary" />
+            <StatCard icon={CheckCircle} label="Collection Efficiency" value={`${Number(billingLiveStats?.collection_efficiency || 0).toFixed(1)}%`}          color="green"   />
+          </div>
+          )}
+        </div>
+      )}
+
+      {/* Revenue Trend + Top Customers (only shown when data exists or access denied) */}
+      {(revenueChart?.length > 0 || topCustomers?.length > 0 || is403(revenueChartError) || is403(topCustomersError)) && (
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-          {revenueChart?.length > 0 && (
+          {is403(revenueChartError) ? (
+            <div className="xl:col-span-2"><FinancialAccessDenied section="Revenue Chart" /></div>
+          ) : revenueChart?.length > 0 && (
             <div className="xl:col-span-2 card-glow p-5">
               <div className="flex items-center justify-between mb-5">
                 <div>
@@ -258,7 +334,9 @@ export default function DashboardPage() {
               </ResponsiveContainer>
             </div>
           )}
-          {topCustomers?.length > 0 && (
+          {is403(topCustomersError) ? (
+            <FinancialAccessDenied section="Top Customers" />
+          ) : topCustomers?.length > 0 && (
             <div className="card-glow p-5">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="font-semibold text-white">Top Customers</h3>

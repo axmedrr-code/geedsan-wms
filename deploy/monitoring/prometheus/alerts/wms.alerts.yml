@@ -1,0 +1,284 @@
+groups:
+
+  # ── Endpoint Availability ───────────────────────────────────────────────────
+  - name: endpoint_availability
+    rules:
+
+      - alert: ServiceEndpointDown
+        expr: probe_success{job="blackbox_http"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service endpoint unreachable: {{ $labels.instance }}"
+          description: "HTTP probe has failed for {{ $labels.instance }} for 2+ minutes."
+
+      - alert: ServiceEndpointSlowResponse
+        expr: probe_duration_seconds{job="blackbox_http"} > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow response from {{ $labels.instance }} ({{ $value | humanizeDuration }})"
+          description: "Endpoint {{ $labels.instance }} is responding slowly for 5+ minutes."
+
+      - alert: MQTTPortDown
+        expr: probe_success{job="blackbox_tcp", instance="mosquitto:1883"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MQTT broker port unreachable"
+          description: "TCP probe to mosquitto:1883 is failing — MQTT subscribers and ChirpStack may be disconnected."
+
+  # ── SSL Certificate Expiry ──────────────────────────────────────────────────
+  - name: ssl_certificates
+    rules:
+
+      - alert: SSLCertExpiryWarning
+        expr: |
+          (probe_ssl_earliest_cert_expiry{job="blackbox_http"} - time()) / 86400 < 30
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "SSL cert expiring soon for {{ $labels.instance }}"
+          description: "Certificate for {{ $labels.instance }} expires in {{ $value | humanize }} days. Run: bash /opt/geedsan/deploy/ssl/setup-ssl.sh to renew."
+
+      - alert: SSLCertExpiryCritical
+        expr: |
+          (probe_ssl_earliest_cert_expiry{job="blackbox_http"} - time()) / 86400 < 7
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SSL cert expiring CRITICALLY soon for {{ $labels.instance }}"
+          description: "Certificate for {{ $labels.instance }} expires in {{ $value | humanize }} days. RENEW IMMEDIATELY."
+
+  # ── Prometheus Targets ──────────────────────────────────────────────────────
+  - name: prometheus_targets
+    rules:
+
+      - alert: PrometheusTargetMissing
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus target missing: {{ $labels.job }} / {{ $labels.instance }}"
+          description: "Prometheus cannot scrape {{ $labels.job }} ({{ $labels.instance }}). The exporter may be down."
+
+  # ── Host Resources ─────────────────────────────────────────────────────────
+  - name: host_resources
+    rules:
+
+      - alert: HighCPUUsage
+        expr: |
+          100 - (avg by (instance) (
+            rate(node_cpu_seconds_total{mode="idle"}[5m])
+          ) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}: {{ $value | humanize }}%"
+          description: "CPU usage has been above 85% for 5+ minutes."
+
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes
+          ) / node_memory_MemTotal_bytes * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}: {{ $value | humanize }}%"
+          description: "Available memory is critically low (>90% used) for 5+ minutes."
+
+      - alert: DiskSpaceWarning
+        expr: |
+          (
+            node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs"} -
+            node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs"}
+          ) / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs"} * 100 > 75
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk usage above 75% on {{ $labels.mountpoint }}"
+          description: "Disk at {{ $labels.mountpoint }} is {{ $value | humanize }}% full on {{ $labels.instance }}."
+
+      - alert: DiskSpaceCritical
+        expr: |
+          (
+            node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs"} -
+            node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs"}
+          ) / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs"} * 100 > 90
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL: Disk almost full on {{ $labels.mountpoint }}"
+          description: "Disk at {{ $labels.mountpoint }} is {{ $value | humanize }}% full. Immediate action required."
+
+      - alert: DiskWillFillIn4Hours
+        expr: |
+          predict_linear(
+            node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs"}[1h],
+            4 * 3600
+          ) < 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk at {{ $labels.mountpoint }} will fill in ~4 hours"
+          description: "Based on current write rate, disk at {{ $labels.mountpoint }} will be full in less than 4 hours."
+
+      - alert: HighDiskIOWait
+        expr: |
+          rate(node_cpu_seconds_total{mode="iowait"}[5m]) * 100 > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High disk I/O wait on {{ $labels.instance }}: {{ $value | humanize }}%"
+          description: "Disk I/O wait above 20% — may indicate disk saturation or slow storage."
+
+  # ── Docker Containers ───────────────────────────────────────────────────────
+  - name: containers
+    rules:
+
+      - alert: ContainerDown
+        # Fires if a critical WMS service container has no cAdvisor CPU metrics for 2 min
+        expr: |
+          absent(container_cpu_usage_seconds_total{
+            container_label_com_docker_compose_project="geedsan",
+            container_label_com_docker_compose_service=~"backend|frontend|nginx|postgres|redis|mosquitto|odoo|chirpstack"
+          })
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "One or more WMS containers are down"
+          description: "cAdvisor has no CPU metrics for a required WMS service. Check: docker compose -f docker-compose.prod.yml ps"
+
+      - alert: ContainerHighCPU
+        expr: |
+          sum by (container_label_com_docker_compose_service) (
+            rate(container_cpu_usage_seconds_total{
+              container_label_com_docker_compose_project="geedsan",
+              image!=""
+            }[5m])
+          ) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High container CPU: {{ $labels.container_label_com_docker_compose_service }} ({{ $value | humanize }}%)"
+          description: "Container {{ $labels.container_label_com_docker_compose_service }} is using >80% CPU for 5+ minutes."
+
+      - alert: ContainerHighMemory
+        expr: |
+          container_memory_working_set_bytes{
+            container_label_com_docker_compose_project="geedsan",
+            image!=""
+          } / container_spec_memory_limit_bytes{
+            container_label_com_docker_compose_project="geedsan",
+            image!=""
+          } * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container memory high: {{ $labels.container_label_com_docker_compose_service }} ({{ $value | humanize }}%)"
+          description: "Container {{ $labels.container_label_com_docker_compose_service }} is using >90% of its memory limit."
+
+      - alert: ContainerOOMKilled
+        # cAdvisor exposes container_oom_events_total in newer versions
+        expr: |
+          increase(container_oom_events_total{
+            container_label_com_docker_compose_project="geedsan"
+          }[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container OOM killed: {{ $labels.container_label_com_docker_compose_service }}"
+          description: "Container was killed due to out-of-memory. Increase memory limit or investigate memory leak."
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  - name: postgresql
+    rules:
+
+      - alert: PostgreSQLDown
+        expr: pg_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is down or unreachable"
+          description: "postgres_exporter cannot connect to PostgreSQL. Check: docker compose -f docker-compose.prod.yml logs postgres"
+
+      - alert: PostgreSQLHighConnections
+        expr: |
+          pg_stat_activity_count / pg_settings_max_connections * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL connections at {{ $value | humanize }}% of maximum"
+          description: "PostgreSQL is using more than 80% of max_connections. Consider connection pooling (PgBouncer)."
+
+      - alert: PostgreSQLDeadlocks
+        expr: |
+          increase(pg_stat_database_deadlocks{datname=~"geedsan_wms|odoo"}[5m]) > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL deadlocks detected in {{ $labels.datname }}"
+          description: "{{ $value }} deadlocks in the last 5 minutes in database {{ $labels.datname }}."
+
+      - alert: PostgreSQLSlowQueries
+        expr: |
+          pg_stat_activity_max_tx_duration{state="active"} > 300
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Long-running PostgreSQL query detected (>5 min)"
+          description: "A query has been running for over 5 minutes. This may indicate a lock or performance issue."
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  - name: redis
+    rules:
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is down or unreachable"
+          description: "redis_exporter cannot connect to Redis. JWT blacklisting and session caching are non-functional."
+
+      - alert: RedisHighMemory
+        expr: |
+          redis_memory_used_bytes / redis_memory_max_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis memory usage high: {{ $value | humanize }}%"
+          description: "Redis is using >85% of its configured maxmemory. Keys may be evicted."
+
+      - alert: RedisRejectedConnections
+        expr: |
+          increase(redis_rejected_connections_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis is rejecting connections"
+          description: "Redis has rejected {{ $value }} connections in the last 5 minutes."

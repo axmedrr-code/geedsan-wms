@@ -1,0 +1,97 @@
+global:
+  resolve_timeout: 5m
+
+  # Telegram via webhook — uses Alertmanager's native telegram_configs
+  # Available in Alertmanager >= 0.25
+  telegram_api_url: "https://api.telegram.org"
+
+# ── Notification templates ────────────────────────────────────────────────────
+templates:
+  - /etc/alertmanager/templates/*.tmpl
+
+# ── Routing tree ──────────────────────────────────────────────────────────────
+route:
+  receiver: telegram-critical
+  group_by: ['alertname', 'severity']
+  group_wait:      30s
+  group_interval:  5m
+  repeat_interval: 4h
+
+  routes:
+    # Critical alerts — immediate notification
+    - match:
+        severity: critical
+      receiver: telegram-critical
+      group_wait:      10s
+      repeat_interval: 1h
+
+    # Warning alerts — grouped, less frequent
+    - match:
+        severity: warning
+      receiver: telegram-warning
+      group_wait:      60s
+      group_interval:  10m
+      repeat_interval: 6h
+
+    # Silence node_exporter target missing during planned maintenance
+    # (add matchers here or use Alertmanager's silence UI)
+
+# ── Inhibit rules ─────────────────────────────────────────────────────────────
+inhibit_rules:
+  # If ServiceEndpointDown fires, suppress the slower PrometheusTargetMissing for same instance
+  - source_matchers:
+      - 'alertname = "ServiceEndpointDown"'
+    target_matchers:
+      - 'alertname = "PrometheusTargetMissing"'
+    equal: ['instance']
+
+  # If DiskSpaceCritical fires, silence DiskSpaceWarning for same mountpoint
+  - source_matchers:
+      - 'alertname = "DiskSpaceCritical"'
+    target_matchers:
+      - 'alertname = "DiskSpaceWarning"'
+    equal: ['mountpoint', 'instance']
+
+  # If SSLCertExpiryCritical fires, silence SSLCertExpiryWarning for same instance
+  - source_matchers:
+      - 'alertname = "SSLCertExpiryCritical"'
+    target_matchers:
+      - 'alertname = "SSLCertExpiryWarning"'
+    equal: ['instance']
+
+# ── Receivers ─────────────────────────────────────────────────────────────────
+receivers:
+
+  - name: telegram-critical
+    telegram_configs:
+      - api_url:      "https://api.telegram.org"
+        bot_token:    "${TELEGRAM_BOT_TOKEN}"
+        chat_id:      ${TELEGRAM_CHAT_ID}
+        parse_mode:   HTML
+        message: |
+          🔴 <b>CRITICAL ALERT</b> — NUWACO WMS
+
+          <b>{{ .GroupLabels.alertname }}</b>
+
+          {{ range .Alerts }}
+          📍 <b>{{ .Annotations.summary }}</b>
+          {{ .Annotations.description }}
+          🏷 Severity: {{ .Labels.severity }}
+          ⏰ Started: {{ .StartsAt.Format "2006-01-02 15:04 UTC" }}
+          {{ end }}
+
+  - name: telegram-warning
+    telegram_configs:
+      - api_url:      "https://api.telegram.org"
+        bot_token:    "${TELEGRAM_BOT_TOKEN}"
+        chat_id:      ${TELEGRAM_CHAT_ID}
+        parse_mode:   HTML
+        message: |
+          ⚠️ <b>WARNING</b> — NUWACO WMS
+
+          <b>{{ .GroupLabels.alertname }}</b>
+
+          {{ range .Alerts }}
+          📍 {{ .Annotations.summary }}
+          🏷 Severity: {{ .Labels.severity }}
+          {{ end }}

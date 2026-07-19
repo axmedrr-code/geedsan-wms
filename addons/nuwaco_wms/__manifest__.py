@@ -1,6 +1,6 @@
 {
     'name': 'NUWACO WMS Integration',
-    'version': '18.0.1.0.0',
+    'version': '18.0.2.0.0',
     'category': 'Industries',
     'summary': 'Smart Water Meter Management System — ERP integration layer',
     'description': """
@@ -21,7 +21,7 @@ Synced entities
 Data flow: WMS backend (Node.js) → Odoo XML-RPC only.
 ChirpStack and MQTT never touch Odoo directly.
     """,
-    'author': 'GEEDSAN',
+    'author': 'NUWACO',
     'website': '',
     'license': 'LGPL-3',
     'depends': ['base', 'account', 'mail'],

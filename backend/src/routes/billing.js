@@ -11,7 +11,13 @@ const {
   validateBillingPeriod,
   cancelBillingRun,
   postPendingBillingRun,
+  getBillingDashboardStats,
+  generateInvoiceForCustomer,
+  generateInvoiceForZone,
+  generateInvoiceForSelected,
 } = require('../services/billingService');
+const { syncInvoiceToOdoo, enqueueOdooSync } = require('../services/odooService');
+const logger = require('../services/logger');
 
 // ── Billing Settings ──────────────────────────────────────────────────────────
 
@@ -137,6 +143,67 @@ router.post('/runs/:runId/post', authenticate, authorize('admin'), async (req, r
   }
 });
 
+// ── Billing Dashboard Stats ───────────────────────────────────────────────────
+
+router.get('/stats', authenticate, authorize('admin', 'operator', 'manager', 'finance', 'billing_officer', 'viewer'), async (req, res) => {
+  try {
+    res.json(await getBillingDashboardStats());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Direct Invoice Generation ──────────────────────────────────────────────────
+
+// Bill a single customer
+router.post('/generate/customer/:id', authenticate, authorize('admin', 'operator'), async (req, res) => {
+  try {
+    const result = await generateInvoiceForCustomer(req.params.id, {
+      period_start:  req.body?.period_start,
+      period_end:    req.body?.period_end,
+      due_days:      req.body?.due_days,
+      notes:         req.body?.notes,
+      invoice_number: req.body?.invoice_number,
+      created_by:    req.user.userId,
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : err.message.includes('already exists') ? 409 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// Bill all active customers in a zone
+router.post('/generate/zone/:zoneId', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const result = await generateInvoiceForZone(req.params.zoneId, {
+      period_start: req.body?.period_start,
+      period_end:   req.body?.period_end,
+      due_days:     req.body?.due_days,
+      notes:        req.body?.notes,
+      created_by:   req.user.userId,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bill a selected list of customers
+// Body: { customer_ids: [uuid, ...], period_start?, period_end?, due_days?, notes? }
+router.post('/generate/selected', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { customer_ids, ...opts } = req.body || {};
+    if (!Array.isArray(customer_ids) || !customer_ids.length) {
+      return res.status(400).json({ error: 'customer_ids array is required' });
+    }
+    const result = await generateInvoiceForSelected(customer_ids, { ...opts, created_by: req.user.userId });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Invoice CRUD ───────────────────────────────────────────────────────────────
 
 router.get('/', authenticate, authorize('admin', 'operator'), async (req, res) => {
@@ -151,7 +218,7 @@ router.get('/', authenticate, authorize('admin', 'operator'), async (req, res) =
 
     const countR = await query(`SELECT COUNT(*) FROM invoices b WHERE ${where}`, params);
     const r      = await query(
-      `SELECT b.*, c.full_name AS customer_name, c.customer_number,
+      `SELECT b.*, c.full_name AS customer_name, c.house_number AS customer_number,
               COALESCE((SELECT SUM(ip.amount) FROM invoice_payments ip WHERE ip.invoice_id=b.id), 0) AS total_paid
        FROM invoices b
        LEFT JOIN customers c ON b.customer_id=c.id WHERE ${where}
@@ -168,7 +235,7 @@ router.get('/', authenticate, authorize('admin', 'operator'), async (req, res) =
 router.get('/:id', authenticate, authorize('admin', 'operator'), async (req, res) => {
   try {
     const invoiceR = await query(
-      `SELECT b.*, c.full_name AS customer_name, c.customer_number, c.email AS customer_email,
+      `SELECT b.*, c.full_name AS customer_name, c.house_number AS customer_number, c.email AS customer_email,
               u.full_name AS created_by_name,
               COALESCE((SELECT SUM(ip.amount) FROM invoice_payments ip WHERE ip.invoice_id=b.id), 0) AS total_paid
        FROM invoices b
@@ -230,6 +297,14 @@ router.post('/', authenticate, authorize('admin', 'operator'), async (req, res) 
       [req.user.id, 'create_invoice', 'invoice', invoiceId, JSON.stringify({ customer_id, invoice_number, issue_date, due_date, tariff_type, total_amount, status, notes }), req.ip, req.headers['user-agent'] || null]
     );
 
+    // Sync to Odoo immediately; fall back to retry queue if Odoo is unreachable
+    try {
+      await syncInvoiceToOdoo(invoiceId);
+    } catch (syncErr) {
+      logger.warn('Immediate Odoo invoice sync failed — queuing for retry', { error: syncErr.message, invoiceId });
+      await enqueueOdooSync('invoice', invoiceId).catch(e => logger.warn('Odoo invoice enqueue also failed', { error: e.message }));
+    }
+
     res.status(201).json({ invoice: r.rows[0] });
   } catch (err) {
     console.error(err);
@@ -256,7 +331,7 @@ router.put('/:id', authenticate, authorize('admin', 'operator'), async (req, res
 router.get('/:id/pdf', authenticate, authorize('admin', 'operator', 'manager', 'finance', 'billing_officer', 'customer_service'), async (req, res) => {
   try {
     const invoiceR = await query(
-      `SELECT b.*, c.full_name AS customer_name, c.customer_number, c.email AS customer_email,
+      `SELECT b.*, c.full_name AS customer_name, c.house_number AS customer_number, c.email AS customer_email,
               c.phone AS customer_phone, c.address AS customer_address, c.city AS customer_city,
               u.full_name AS created_by_name,
               COALESCE((SELECT SUM(ip.amount) FROM invoice_payments ip WHERE ip.invoice_id=b.id), 0) AS total_paid
@@ -464,7 +539,7 @@ router.get('/:id/pdf', authenticate, authorize('admin', 'operator', 'manager', '
     const footY = pageH - 45;
     doc.moveTo(L, footY).lineTo(R, footY).strokeColor(LINE).lineWidth(1).stroke();
     doc.fillColor(MUTED).font('Helvetica').fontSize(7.5)
-       .text(`Generated by Geedsan WMS · ${new Date().toUTCString()}`, L, footY + 8, { width: R - L, align: 'center' });
+       .text(`Generated by NUWACO WMS · ${new Date().toUTCString()}`, L, footY + 8, { width: R - L, align: 'center' });
     if (inv.created_by_name) {
       doc.text(`Issued by: ${inv.created_by_name}`, L, footY + 20, { width: R - L, align: 'center' });
     }

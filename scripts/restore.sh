@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# GEEDSAN WMS - Postgres restore script
+# NUWACO WMS - Postgres restore script
 #
 # Usage:
 #   ./scripts/restore.sh geedsan_wms backups/geedsan_wms_20260101_020000.sql.gz

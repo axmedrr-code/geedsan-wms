@@ -35,6 +35,19 @@ const persistHistoricalFlow = async (meter, historicalFlow) => {
 const ingestTelemetry = async (meter, decoded, meta = {}) => {
   const { rssi = null, snr = null, fPort = null, fCnt = null, rawPayload = null, gatewayEui = null } = meta;
 
+  // Duplicate packet detection: skip if same (meter_id, f_cnt) seen in last 24 h.
+  // f_cnt is a 16-bit counter on LoRaWAN devices; duplication can happen when
+  // multiple gateways forward the same uplink or on network retry.
+  if (fCnt !== null) {
+    const dup = await query(
+      `SELECT id FROM meter_readings WHERE meter_id=$1 AND f_cnt=$2 AND timestamp > NOW()-INTERVAL '24 hours' LIMIT 1`,
+      [meter.id, fCnt]
+    );
+    if (dup.rows.length > 0) {
+      return { newAlarms: [], duplicate: true };
+    }
+  }
+
   // Pulse count + pulse constant -> consumption (m³). The constant is usually
   // configured once on the device, not resent every report, so fall back to
   // the meter's last known pulse_constant_liters when this frame omits it.
@@ -48,12 +61,17 @@ const ingestTelemetry = async (meter, decoded, meta = {}) => {
     `INSERT INTO meter_readings (
       meter_id, device_eui, timestamp, total_consumption, current_flow,
       battery_voltage, pressure, rssi, snr, pulse_count, status_word_1, status_word_2,
-      trigger_source, f_port, f_cnt, raw_payload, alarm_flags, gateway_eui, created_at
-    ) VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+      trigger_source, f_port, f_cnt, raw_payload, alarm_flags, gateway_eui,
+      temperature, valve_status, decoded_payload, created_at
+    ) VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+              $18, $19, $20, NOW())
     RETURNING id`,
     [meter.id, meter.device_eui, totalConsumption, decoded.currentFlow, decoded.batteryVoltage,
       decoded.pressure, rssi, snr, decoded.pulseCount, decoded.statusWord1, decoded.statusWord2,
-      decoded.triggerSource, fPort, fCnt, rawPayload, JSON.stringify(decoded.alarmFlags || {}), gatewayEui]
+      decoded.triggerSource, fPort, fCnt, rawPayload, JSON.stringify(decoded.alarmFlags || {}), gatewayEui,
+      decoded.temperature ?? null,
+      decoded.valveStatus ?? null,
+      JSON.stringify(decoded)]
   );
   enqueueOdooSync('reading', readingInsert.rows[0].id).catch(err =>
     console.error('[odoo] failed to enqueue reading sync:', err.message)
@@ -81,6 +99,35 @@ const ingestTelemetry = async (meter, decoded, meta = {}) => {
   await query(upQ, upP);
 
   if (decoded.historicalFlow) await persistHistoricalFlow(meter, decoded.historicalFlow);
+
+  // Confirm any outstanding valve command when telemetry shows the expected valve state
+  if (decoded.valveStatus) {
+    const pendingCmd = await query(
+      `SELECT id, command_type FROM downlink_commands
+        WHERE meter_id=$1 AND status='sent'
+          AND command_type IN ('open_valve','close_valve')
+        ORDER BY created_at DESC LIMIT 1`,
+      [meter.id]
+    );
+    if (pendingCmd.rows[0]) {
+      const cmd = pendingCmd.rows[0];
+      const expectedValve = cmd.command_type === 'open_valve' ? 'open' : 'closed';
+      if (decoded.valveStatus === expectedValve) {
+        await query(
+          `UPDATE downlink_commands
+              SET status='executed', executed_at=NOW()
+            WHERE id=$1`,
+          [cmd.id]
+        );
+        await query(
+          `UPDATE downlink_commands
+              SET lifecycle_log = lifecycle_log || $1::jsonb
+            WHERE id=$2`,
+          [JSON.stringify([{ state: 'executed', at: new Date().toISOString(), confirmed_by: 'telemetry' }]), cmd.id]
+        );
+      }
+    }
+  }
 
   realtimeService.publish('telemetry', { meterId: meter.id, deviceEui: meter.device_eui, decoded });
 

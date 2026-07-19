@@ -91,7 +91,7 @@ export default function CustomersPage() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
           <input
             className="input pl-9 w-full"
-            placeholder="Search by name, phone, customer #, meter #, device EUI, national ID…"
+            placeholder="Search by name, phone, house #, meter #, device EUI, national ID…"
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
@@ -134,7 +134,7 @@ export default function CustomersPage() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Customer No.</th>
+                <th>House No.</th>
                 <th>Name</th>
                 <th>Phone</th>
                 <th>City</th>
@@ -184,7 +184,7 @@ export default function CustomersPage() {
                           href={`/dashboard/customers/${c.id}`}
                           className="font-mono text-xs text-primary-400 hover:text-primary-300"
                         >
-                          {c.customer_number}
+                          {c.house_number}
                         </Link>
                       </td>
 

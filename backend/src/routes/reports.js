@@ -19,6 +19,9 @@ const VALID_REPORT_TYPES = [
   'billing_summary', 'payment_collection', 'outstanding_balance',
   'consumption_summary', 'customer_statement', 'meter_reading_report',
   'gateway_activity', 'alarm_report', 'delivery_report',
+  // Smart meter operations reports (Phase 5)
+  'meter_history', 'leak_report', 'battery_report', 'pressure_report',
+  'rssi_report', 'valve_operations', 'offline_meters', 'communication_report',
 ];
 const VALID_FILE_TYPES = ['pdf', 'xlsx', 'csv'];
 
@@ -40,6 +43,15 @@ const REPORT_COLUMNS = {
   gateway_activity:     ['Gateway Name', 'Gateway EUI', 'Date', 'Readings', 'Unique Meters'],
   alarm_report:         ['Alarm Type', 'Severity', 'Status', 'Triggered At', 'Meter No.', 'Customer Name', 'AI Recommendation'],
   delivery_report:      ['Vehicle No.', 'Driver', 'Scheduled At', 'Volume (m³)', 'Status', 'Customer Name', 'Address'],
+  // Phase 5 operations reports
+  meter_history:        ['Timestamp', 'Meter No.', 'Customer', 'Total Consumption (m³)', 'Flow (L/min)', 'Battery (V)', 'Pressure (bar)', 'RSSI (dBm)', 'SNR (dB)', 'Gateway', 'Valve Status'],
+  leak_report:          ['Detected At', 'Meter No.', 'Customer', 'Type', 'Severity', 'Status', 'AI Score', 'Resolved At'],
+  battery_report:       ['Meter No.', 'Device EUI', 'Customer', 'Battery (V)', 'Battery (%)', 'Last Seen', 'Online'],
+  pressure_report:      ['Date', 'Meter No.', 'Customer', 'Avg Pressure (bar)', 'Min Pressure', 'Max Pressure', 'Readings'],
+  rssi_report:          ['Date', 'Meter No.', 'Customer', 'Avg RSSI (dBm)', 'Min RSSI', 'Avg SNR (dB)', 'Readings'],
+  valve_operations:     ['Sent At', 'Meter No.', 'Device EUI', 'Command', 'Status', 'Operator', 'Executed At', 'Gateway'],
+  offline_meters:       ['Meter No.', 'Device EUI', 'Customer', 'Last Seen', 'Hours Offline', 'Zone'],
+  communication_report: ['Meter No.', 'Customer', 'Readings (24h)', 'Expected (24h)', 'Success Rate (%)', 'Packet Loss (%)', 'Last Seen'],
 };
 
 // Returns an ordered array of cell values for a DB row, matching REPORT_COLUMNS order.
@@ -115,6 +127,73 @@ const rowToValues = (type, row) => {
         row.vehicle_number || '—', row.driver_name || '—', row.scheduled_at,
         Number(row.delivery_volume || 0).toFixed(2),
         row.status, row.customer_name || '—', row.delivery_address || row.customer_address || '—',
+      ];
+    case 'meter_history':
+      return [
+        row.timestamp, row.meter_number, row.customer_name || '—',
+        Number(row.total_consumption || 0).toFixed(3),
+        Number(row.current_flow || 0).toFixed(2),
+        row.battery_voltage != null ? Number(row.battery_voltage).toFixed(2) : '—',
+        row.pressure != null ? Number(row.pressure).toFixed(2) : '—',
+        row.rssi != null ? row.rssi : '—',
+        row.snr  != null ? Number(row.snr).toFixed(1) : '—',
+        row.gateway_eui || '—',
+        row.valve_status || '—',
+      ];
+    case 'leak_report':
+      return [
+        row.detected_at, row.meter_number, row.customer_name || '—',
+        (row.detection_type || '').replace(/_/g, ' '),
+        row.severity, row.status,
+        row.ai_score != null ? Number(row.ai_score).toFixed(2) : '—',
+        row.resolved_at || '—',
+      ];
+    case 'battery_report':
+      return [
+        row.meter_number, row.device_eui || '—', row.customer_name || '—',
+        row.battery_voltage != null ? Number(row.battery_voltage).toFixed(2) : '—',
+        row.battery_pct     != null ? `${row.battery_pct}%` : '—',
+        row.last_seen || '—',
+        row.is_online ? 'Yes' : 'No',
+      ];
+    case 'pressure_report':
+      return [
+        row.date, row.meter_number, row.customer_name || '—',
+        Number(row.avg_pressure || 0).toFixed(2),
+        Number(row.min_pressure || 0).toFixed(2),
+        Number(row.max_pressure || 0).toFixed(2),
+        row.reading_count,
+      ];
+    case 'rssi_report':
+      return [
+        row.date, row.meter_number, row.customer_name || '—',
+        Number(row.avg_rssi || 0).toFixed(1),
+        Number(row.min_rssi || 0).toFixed(1),
+        Number(row.avg_snr  || 0).toFixed(1),
+        row.reading_count,
+      ];
+    case 'valve_operations':
+      return [
+        row.sent_at, row.meter_number || '—', row.device_eui || '—',
+        row.command_type, row.status,
+        row.sent_by_name || '—',
+        row.executed_at || '—',
+        row.gateway_eui || '—',
+      ];
+    case 'offline_meters':
+      return [
+        row.meter_number, row.device_eui || '—', row.customer_name || '—',
+        row.last_seen || 'Never',
+        row.hours_offline != null ? Number(row.hours_offline).toFixed(1) : '—',
+        row.zone_name || '—',
+      ];
+    case 'communication_report':
+      return [
+        row.meter_number, row.customer_name || '—',
+        row.readings_24h, row.expected_24h,
+        `${row.success_rate}%`,
+        `${row.packet_loss}%`,
+        row.last_seen || '—',
       ];
     default:
       return Object.values(row).map(v => v == null ? '' : v);
@@ -399,6 +478,173 @@ const getReportData = async (reportType, params) => {
     return r.rows;
   }
 
+  // ── Phase 5 operations report types ──────────────────────────────────────────
+
+  if (reportType === 'meter_history') {
+    const args = [fromDate, toDate];
+    let extra = '';
+    if (meter_id)    { args.push(meter_id);    extra += ` AND mr.meter_id=$${args.length}`; }
+    if (customer_id) { args.push(customer_id); extra += ` AND m.customer_id=$${args.length}`; }
+    const r = await query(
+      `SELECT mr.timestamp, m.meter_number, c.full_name AS customer_name,
+              mr.total_consumption, mr.current_flow, mr.battery_voltage,
+              mr.pressure, mr.rssi, mr.snr, mr.gateway_eui, mr.valve_status
+       FROM meter_readings mr
+       JOIN meters m ON mr.meter_id = m.id
+       LEFT JOIN customers c ON m.customer_id = c.id
+       WHERE DATE(mr.timestamp) BETWEEN $1 AND $2${extra}
+       ORDER BY mr.timestamp DESC LIMIT 5000`,
+      args,
+    );
+    return r.rows;
+  }
+
+  if (reportType === 'leak_report') {
+    const args = [fromDate, toDate];
+    let extra = '';
+    if (meter_id)    { args.push(meter_id);    extra += ` AND le.meter_id=$${args.length}`; }
+    if (customer_id) { args.push(customer_id); extra += ` AND m.customer_id=$${args.length}`; }
+    if (status)      { args.push(status);       extra += ` AND le.status=$${args.length}`; }
+    const r = await query(
+      `SELECT le.detected_at, m.meter_number, c.full_name AS customer_name,
+              le.detection_type, le.severity, le.status, le.ai_score, le.resolved_at
+       FROM leak_events le
+       JOIN meters m ON le.meter_id = m.id
+       LEFT JOIN customers c ON m.customer_id = c.id
+       WHERE DATE(le.detected_at) BETWEEN $1 AND $2${extra}
+       ORDER BY le.detected_at DESC`,
+      args,
+    );
+    return r.rows;
+  }
+
+  if (reportType === 'battery_report') {
+    const args = [];
+    let extra = '';
+    if (customer_id) { args.push(customer_id); extra += ` AND m.customer_id=$${args.length}`; }
+    const r = await query(
+      `SELECT m.meter_number, m.device_eui, c.full_name AS customer_name,
+              m.battery_voltage,
+              GREATEST(0, LEAST(100, ROUND(((m.battery_voltage - 2.8) / 0.8) * 100))) AS battery_pct,
+              m.last_seen, m.is_online
+       FROM meters m
+       LEFT JOIN customers c ON m.customer_id = c.id
+       WHERE m.status = 'active'${extra}
+       ORDER BY m.battery_voltage ASC NULLS LAST`,
+      args,
+    );
+    return r.rows;
+  }
+
+  if (reportType === 'pressure_report') {
+    const args = [fromDate, toDate];
+    let extra = '';
+    if (meter_id)    { args.push(meter_id);    extra += ` AND mr.meter_id=$${args.length}`; }
+    if (customer_id) { args.push(customer_id); extra += ` AND m.customer_id=$${args.length}`; }
+    const r = await query(
+      `SELECT DATE(mr.timestamp) AS date, m.meter_number, c.full_name AS customer_name,
+              AVG(mr.pressure) AS avg_pressure,
+              MIN(mr.pressure) AS min_pressure,
+              MAX(mr.pressure) AS max_pressure,
+              COUNT(*) AS reading_count
+       FROM meter_readings mr
+       JOIN meters m ON mr.meter_id = m.id
+       LEFT JOIN customers c ON m.customer_id = c.id
+       WHERE DATE(mr.timestamp) BETWEEN $1 AND $2
+         AND mr.pressure IS NOT NULL${extra}
+       GROUP BY DATE(mr.timestamp), m.id, m.meter_number, c.full_name
+       ORDER BY date DESC, m.meter_number`,
+      args,
+    );
+    return r.rows;
+  }
+
+  if (reportType === 'rssi_report') {
+    const args = [fromDate, toDate];
+    let extra = '';
+    if (meter_id)    { args.push(meter_id);    extra += ` AND mr.meter_id=$${args.length}`; }
+    if (customer_id) { args.push(customer_id); extra += ` AND m.customer_id=$${args.length}`; }
+    const r = await query(
+      `SELECT DATE(mr.timestamp) AS date, m.meter_number, c.full_name AS customer_name,
+              AVG(mr.rssi) AS avg_rssi,
+              MIN(mr.rssi) AS min_rssi,
+              AVG(mr.snr)  AS avg_snr,
+              COUNT(*)     AS reading_count
+       FROM meter_readings mr
+       JOIN meters m ON mr.meter_id = m.id
+       LEFT JOIN customers c ON m.customer_id = c.id
+       WHERE DATE(mr.timestamp) BETWEEN $1 AND $2
+         AND mr.rssi IS NOT NULL${extra}
+       GROUP BY DATE(mr.timestamp), m.id, m.meter_number, c.full_name
+       ORDER BY date DESC, avg_rssi ASC`,
+      args,
+    );
+    return r.rows;
+  }
+
+  if (reportType === 'valve_operations') {
+    const args = [fromDate, toDate];
+    let extra = '';
+    if (meter_id)    { args.push(meter_id);    extra += ` AND dc.meter_id=$${args.length}`; }
+    if (customer_id) { args.push(customer_id); extra += ` AND m.customer_id=$${args.length}`; }
+    const r = await query(
+      `SELECT dc.sent_at, m.meter_number, dc.device_eui,
+              dc.command_type, dc.status,
+              u.full_name AS sent_by_name,
+              dc.executed_at,
+              (dc.lifecycle_log->-1->>'gateway_eui') AS gateway_eui
+       FROM downlink_commands dc
+       LEFT JOIN meters m ON dc.meter_id = m.id
+       LEFT JOIN users u  ON dc.sent_by = u.id
+       WHERE dc.command_type IN ('open_valve','close_valve')
+         AND DATE(dc.sent_at) BETWEEN $1 AND $2${extra}
+       ORDER BY dc.sent_at DESC`,
+      args,
+    );
+    return r.rows;
+  }
+
+  if (reportType === 'offline_meters') {
+    const args = [];
+    let extra = '';
+    if (customer_id) { args.push(customer_id); extra += ` AND m.customer_id=$${args.length}`; }
+    const r = await query(
+      `SELECT m.meter_number, m.device_eui, c.full_name AS customer_name,
+              m.last_seen,
+              ROUND(EXTRACT(EPOCH FROM (NOW() - m.last_seen)) / 3600, 1) AS hours_offline,
+              z.zone_name AS zone_name
+       FROM meters m
+       LEFT JOIN customers c ON m.customer_id = c.id
+       LEFT JOIN zones z     ON m.zone_id = z.id
+       WHERE m.status = 'active' AND m.is_online = false${extra}
+       ORDER BY m.last_seen ASC NULLS FIRST`,
+      args,
+    );
+    return r.rows;
+  }
+
+  if (reportType === 'communication_report') {
+    const args = [];
+    let extra = '';
+    if (customer_id) { args.push(customer_id); extra += ` AND m.customer_id=$${args.length}`; }
+    const r = await query(
+      `SELECT m.meter_number, c.full_name AS customer_name,
+              COUNT(mr.id) FILTER (WHERE mr.timestamp >= NOW() - INTERVAL '24 hours') AS readings_24h,
+              96 AS expected_24h,
+              LEAST(100, ROUND(COUNT(mr.id) FILTER (WHERE mr.timestamp >= NOW() - INTERVAL '24 hours') * 100.0 / 96)) AS success_rate,
+              GREATEST(0, 100 - LEAST(100, ROUND(COUNT(mr.id) FILTER (WHERE mr.timestamp >= NOW() - INTERVAL '24 hours') * 100.0 / 96))) AS packet_loss,
+              m.last_seen
+       FROM meters m
+       LEFT JOIN customers c ON m.customer_id = c.id
+       LEFT JOIN meter_readings mr ON mr.meter_id = m.id
+       WHERE m.status = 'active'${extra}
+       GROUP BY m.id, m.meter_number, c.full_name, m.last_seen
+       ORDER BY success_rate ASC`,
+      args,
+    );
+    return r.rows;
+  }
+
   return [];
 };
 
@@ -493,8 +739,8 @@ router.post('/generate', authenticate, async (req, res) => {
 
         // Header banner
         doc.rect(0, 0, doc.page.width, 70).fill('#42A5F5');
-        doc.fillColor('white').fontSize(20).font('Helvetica-Bold').text('GEEDSAN', 40, 15);
-        doc.fontSize(11).font('Helvetica').text('Water Meter Management System', 40, 40);
+        doc.fillColor('white').fontSize(20).font('Helvetica-Bold').text('NUWACO', 40, 15);
+        doc.fontSize(11).font('Helvetica').text('Water Utility Management System', 40, 40);
         doc.fontSize(14).text(reportTitle, 200, 25, { align: 'center' });
         doc.fillColor('#333').fontSize(10).moveDown(2);
         doc.text(`Generated: ${new Date().toLocaleString()} | Period: ${from || 'N/A'} to ${to || 'Today'}`);
@@ -528,7 +774,7 @@ router.post('/generate', authenticate, async (req, res) => {
         });
 
         doc.fontSize(7).fillColor('#999')
-           .text(`GEEDSAN WMS | ${data.length} records`, 40, doc.page.height - 25, { align: 'center' });
+           .text(`NUWACO WMS | ${data.length} records`, 40, doc.page.height - 25, { align: 'center' });
         doc.end();
         stream.on('finish', resolve);
         stream.on('error', reject);
@@ -540,7 +786,7 @@ router.post('/generate', authenticate, async (req, res) => {
       // Title row spanning all columns
       ws.mergeCells(`A1:${colLetter(headers.length)}1`);
       const tc = ws.getCell('A1');
-      tc.value     = `GEEDSAN - ${reportTitle}`;
+      tc.value     = `NUWACO WMS - ${reportTitle}`;
       tc.font      = { bold: true, size: 14, color: { argb: 'FFFFFF' } };
       tc.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: '42A5F5' } };
       tc.alignment = { horizontal: 'center' };

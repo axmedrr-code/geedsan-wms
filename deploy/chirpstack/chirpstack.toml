@@ -1,0 +1,31 @@
+# Non-secret ChirpStack v4 configuration.
+#
+# Connection strings and the API JWT secret are injected via environment
+# variables (see docker-compose.prod.yml) — no credentials live here.
+#
+# MQTT credentials are also injected via env vars:
+#   CHIRPSTACK_INTEGRATION__MQTT__USERNAME / __PASSWORD
+# so this file can be committed to git without exposing secrets.
+
+[logging]
+level="info"
+
+[network]
+net_id="000000"
+enabled_regions=[
+  "eu868",
+]
+
+[api]
+bind="0.0.0.0:8080"
+
+[integration]
+enabled=["mqtt"]
+
+[integration.mqtt]
+event_topic="application/{{application_id}}/device/{{dev_eui}}/event/{{event}}"
+command_topic="application/{{application_id}}/device/{{dev_eui}}/command/{{command}}"
+# Hostname — resolves correctly on Linux Docker bridge (no static IPs needed)
+server="tcp://mosquitto:1883/"
+# username and password are injected via CHIRPSTACK_INTEGRATION__MQTT__USERNAME/PASSWORD
+# environment variables in docker-compose.prod.yml

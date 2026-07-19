@@ -1,0 +1,25 @@
+# /etc/logrotate.d/nuwaco
+#
+# Log rotation for NUWACO WMS nginx logs.
+# Installed by deploy/security/setup-security.sh.
+#
+# Docker container logs (backend_logs volume) are rotated by Docker's
+# own json-file driver (max-size/max-file in docker-compose.prod.yml).
+# This file handles only the nginx host-bind-mounted logs at /var/log/nginx/.
+
+/var/log/nginx/*.access.log /var/log/nginx/*.error.log {
+    daily
+    missingok
+    rotate 30
+    compress
+    delaycompress
+    notifempty
+    sharedscripts
+    create 0640 root adm
+    postrotate
+        # Signal nginx inside the container to reopen log file handles.
+        # "reopen" (SIGUSR1) is zero-downtime — nginx continues serving
+        # requests and writes new entries to the freshly created file.
+        docker exec geedsan-nginx nginx -s reopen 2>/dev/null || true
+    endscript
+}

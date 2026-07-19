@@ -6,19 +6,23 @@ import { useAuthStore } from '../../store/authStore';
 import {
   LayoutDashboard, Gauge, AlertTriangle, Users, FileBarChart,
   Brain, Bell, Settings, LogOut, Droplets, Menu, X,
-  ChevronLeft, Shield, Radio, Activity
+  ChevronLeft, Shield, Radio, Activity, Map, CreditCard, MonitorDot
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
 const NAV = [
   { href: '/dashboard',               icon: LayoutDashboard, label: 'Dashboard',      roles: ['admin','operator','viewer'] },
+  { href: '/dashboard/operations',    icon: MonitorDot,      label: 'Operations',     roles: ['admin','operator','viewer'] },
   { href: '/dashboard/meters',        icon: Gauge,           label: 'Meters',         roles: ['admin','operator','viewer'] },
   { href: '/dashboard/gateways',      icon: Radio,           label: 'Gateways',       roles: ['admin','operator','viewer'] },
   { href: '/dashboard/alarms',        icon: AlertTriangle,   label: 'Alarms',         roles: ['admin','operator','viewer'] },
   { href: '/dashboard/customers',     icon: Users,           label: 'Customers',      roles: ['admin','operator','viewer'] },
+  { href: '/dashboard/zones',         icon: Map,             label: 'Zones',          roles: ['admin','operator'] },
   { href: '/dashboard/reports',       icon: FileBarChart,    label: 'Reports',        roles: ['admin','operator','viewer'] },
   { href: '/dashboard/ai',            icon: Brain,           label: 'AI Analytics',   roles: ['admin','operator','viewer'] },
-  { href: '/dashboard/billing',       icon: FileBarChart,    label: 'Billing',        roles: ['admin','operator'] },
+  { href: '/dashboard/payments',       icon: CreditCard,      label: 'Payments',       roles: ['admin','operator','manager'] },
+  { href: '/dashboard/billing',         icon: FileBarChart,    label: 'Billing',        roles: ['admin','operator'] },
+  { href: '/dashboard/billing/reports',icon: FileBarChart,    label: 'Billing Reports',roles: ['admin','operator','manager'] },
   { href: '/dashboard/tanker',        icon: Droplets,        label: 'Deliveries',     roles: ['admin','operator'] },
   { href: '/dashboard/notifications', icon: Bell,            label: 'Notifications',  roles: ['admin','operator'] },
   { href: '/dashboard/users',         icon: Shield,          label: 'Users',          roles: ['admin'] },

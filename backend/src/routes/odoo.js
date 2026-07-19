@@ -6,6 +6,7 @@ const {
   syncMeterToOdoo, syncReadingToOdoo, syncAlarmToOdoo, syncInvoiceFromReadingToOdoo,
   registerPaymentOnOdooMove,
   enqueueOdooSync, getOdooQueue, getOdooStatus, processRetryQueue,
+  verifySyncedCustomers,
 } = require('../services/odooService');
 
 router.get('/status', authenticate, authorize('admin'), async (req, res) => {
@@ -62,5 +63,12 @@ router.post('/queue/meter/:id',    authenticate, authorize('admin', 'operator'),
 router.post('/queue/invoice/:id',  authenticate, authorize('admin', 'operator'), makeEnqueueRoute('invoice'));
 router.post('/queue/payment/:id',  authenticate, authorize('admin', 'operator'), makeEnqueueRoute('payment'));
 router.post('/queue/alarm/:id',    authenticate, authorize('admin', 'operator'), makeEnqueueRoute('alarm'));
+
+// Field-level verification report: compares every WMS customer against its Odoo partner.
+// Returns { summary, customers: [{wms_id, odoo_id, status, checks: {field: {pass,wms,odoo}}}] }
+router.get('/verify-customers', authenticate, authorize('admin'), async (req, res) => {
+  try { res.json(await verifySyncedCustomers()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 module.exports = router;

@@ -20,7 +20,7 @@ router.get('/', authenticate, async (req, res) => {
       const n = params.length;
       conditions.push(`(
         c.full_name ILIKE $${n}
-        OR c.customer_number ILIKE $${n}
+        OR c.house_number ILIKE $${n}
         OR c.email ILIKE $${n}
         OR c.phone ILIKE $${n}
         OR c.national_id ILIKE $${n}
@@ -78,6 +78,13 @@ router.get('/', authenticate, async (req, res) => {
     const sql = `
       SELECT
         c.*,
+        z.zone_code,
+        z.zone_name,
+        (
+          SELECT m_active.meter_number FROM meters m_active
+          WHERE m_active.customer_id = c.id AND m_active.status = 'active'
+          ORDER BY m_active.created_at ASC LIMIT 1
+        ) AS primary_meter_number,
         COUNT(DISTINCT m.id) FILTER (WHERE m.status='active')          AS meter_count,
         COUNT(DISTINCT m.id) FILTER (WHERE m.status='active' AND m.last_seen > NOW() - INTERVAL '1 hour') AS online_count,
         MAX(r.timestamp)                                                AS last_reading_date,
@@ -90,10 +97,11 @@ router.get('/', authenticate, async (req, res) => {
           WHERE i.customer_id = c.id AND i.status IN ('pending','overdue')
         ), 0) AS outstanding_balance
       FROM customers c
+      LEFT JOIN zones z ON z.id = c.zone_id
       LEFT JOIN meters m ON m.customer_id = c.id
       LEFT JOIN meter_readings r ON r.meter_id = m.id
       WHERE ${where}
-      GROUP BY c.id
+      GROUP BY c.id, z.zone_code, z.zone_name
       ORDER BY c.full_name
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
     `;
@@ -117,12 +125,19 @@ router.get('/', authenticate, async (req, res) => {
   }
 });
 
-// GET /customers/:id — full profile with new fields + outstanding balance
+// GET /customers/:id — full profile with zones + outstanding balance
 router.get('/:id', authenticate, async (req, res) => {
   try {
     const cust = await query(`
       SELECT c.*,
+        z.zone_code,
+        z.zone_name,
         u.full_name AS created_by_name,
+        (
+          SELECT m_active.meter_number FROM meters m_active
+          WHERE m_active.customer_id = c.id AND m_active.status = 'active'
+          ORDER BY m_active.created_at ASC LIMIT 1
+        ) AS primary_meter_number,
         COALESCE((
           SELECT SUM(i.total_amount - COALESCE(ip_sum.paid,0))
           FROM invoices i
@@ -132,6 +147,7 @@ router.get('/:id', authenticate, async (req, res) => {
           WHERE i.customer_id = c.id AND i.status IN ('pending','overdue')
         ), 0) AS outstanding_balance
       FROM customers c
+      LEFT JOIN zones z ON z.id = c.zone_id
       LEFT JOIN users u ON u.id = c.created_by
       WHERE c.id = $1
     `, [req.params.id]);
@@ -152,7 +168,9 @@ router.get('/:id', authenticate, async (req, res) => {
         LIMIT 1
       ) r ON TRUE
       WHERE m.customer_id = $1
-      ORDER BY m.meter_number
+      ORDER BY
+        CASE m.status WHEN 'active' THEN 0 WHEN 'replaced' THEN 1 ELSE 2 END,
+        m.created_at DESC
     `, [req.params.id]);
 
     res.json({ customer: cust.rows[0], meters: meters.rows });
@@ -166,20 +184,52 @@ router.get('/:id', authenticate, async (req, res) => {
 router.post('/', authenticate, authorize('admin', 'operator', 'manager'), async (req, res) => {
   try {
     const {
-      customer_number, full_name, email, phone, address, city, district, tariff_type,
-      national_id, house_number, gps_lat, gps_lng, connection_date, notes
+      house_number: inputHN, full_name, email, phone, address, city, district,
+      tariff_type, national_id, address_ref, zone_id, gps_lat, gps_lng,
+      connection_date, notes,
+      mobile_money_number, owner_name, preferred_payment_method, priority, account_status,
     } = req.body;
+
+    if (!full_name?.trim()) return res.status(400).json({ error: 'full_name is required' });
+
+    // Mode B: auto-generate house_number from zone sequence when input is empty
+    let house_number = (inputHN || '').trim();
+    if (!house_number && zone_id) {
+      const modeR = await query("SELECT value FROM system_settings WHERE key='house_number_mode'");
+      if (modeR.rows[0]?.value === 'auto') {
+        const zoneR = await query(
+          'UPDATE zones SET customer_seq = customer_seq + 1 WHERE id=$1 RETURNING customer_seq, zone_code',
+          [zone_id]
+        );
+        if (!zoneR.rows[0]) return res.status(400).json({ error: 'Zone not found for auto-numbering' });
+        const { customer_seq, zone_code } = zoneR.rows[0];
+        house_number = `${zone_code}-${String(customer_seq).padStart(6, '0')}`;
+      }
+    }
+    if (!house_number) return res.status(400).json({ error: 'house_number is required (or enable auto mode in System Settings)' });
+
     const r = await query(`
       INSERT INTO customers
-        (customer_number, full_name, email, phone, address, city, district, tariff_type,
-         national_id, house_number, gps_lat, gps_lng, connection_date, notes, created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        (house_number, full_name, email, phone, address, city, district, tariff_type,
+         national_id, address_ref, zone_id, gps_lat, gps_lng, connection_date, notes,
+         mobile_money_number, owner_name, preferred_payment_method, priority, account_status,
+         created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
       RETURNING *
     `, [
-      customer_number, full_name, email, phone, address, city, district,
-      tariff_type || 'residential', national_id, house_number,
-      gps_lat || null, gps_lng || null, connection_date || null, notes,
-      req.user?.id || null
+      house_number, full_name, email || null, phone || null,
+      address || null, city || null, district || null,
+      tariff_type || 'residential',
+      national_id || null, address_ref || null,
+      zone_id || null,
+      gps_lat != null && gps_lat !== '' ? Number(gps_lat) : null,
+      gps_lng != null && gps_lng !== '' ? Number(gps_lng) : null,
+      connection_date || null, notes || null,
+      mobile_money_number || null, owner_name || null,
+      preferred_payment_method || 'cash',
+      priority || 'normal',
+      account_status || 'active',
+      req.user?.id || null,
     ]);
     const newCustomer = r.rows[0];
     await recordAudit({
@@ -187,67 +237,83 @@ router.post('/', authenticate, authorize('admin', 'operator', 'manager'), async 
       action:     'customer_created',
       entityType: 'customer',
       entityId:   newCustomer.id,
-      newValues:  { customer_number, full_name, email, phone, tariff_type: newCustomer.tariff_type },
+      newValues:  { house_number, full_name, email, phone, tariff_type: newCustomer.tariff_type },
       ipAddress:  req.ip,
       userAgent:  req.headers['user-agent'] || null,
     });
     res.status(201).json(newCustomer);
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: 'Customer number already exists' });
+    if (err.code === '23505') return res.status(409).json({ error: 'House number already exists' });
     console.error('POST /customers error:', err);
     res.status(500).json({ error: 'Failed to create customer' });
   }
 });
 
-// PUT /customers/:id — extended fields
+// PUT /customers/:id — extended fields (house_number is NOT updatable — it is permanent)
 router.put('/:id', authenticate, authorize('admin', 'operator', 'manager', 'customer_service'), async (req, res) => {
   try {
     const {
       full_name, email, phone, address, city, district, tariff_type, account_status,
-      national_id, house_number, gps_lat, gps_lng, connection_date, notes
+      national_id, address_ref, zone_id, gps_lat, gps_lng, connection_date, notes,
+      mobile_money_number, owner_name, preferred_payment_method, priority,
     } = req.body;
-    // Snapshot old values before update for audit trail
     const oldR = await query(
-      'SELECT full_name, email, phone, address, city, tariff_type, account_status, national_id, house_number, gps_lat, gps_lng, connection_date FROM customers WHERE id=$1',
+      `SELECT full_name, email, phone, address, city, tariff_type, account_status,
+              national_id, address_ref, zone_id, gps_lat, gps_lng, connection_date,
+              mobile_money_number, owner_name, preferred_payment_method, priority
+       FROM customers WHERE id=$1`,
       [req.params.id]
     );
     const old = oldR.rows[0] || {};
 
     const r = await query(`
       UPDATE customers SET
-        full_name       = COALESCE($1,  full_name),
-        email           = COALESCE($2,  email),
-        phone           = COALESCE($3,  phone),
-        address         = COALESCE($4,  address),
-        city            = COALESCE($5,  city),
-        district        = COALESCE($6,  district),
-        tariff_type     = COALESCE($7,  tariff_type),
-        account_status  = COALESCE($8,  account_status),
-        national_id     = COALESCE($9,  national_id),
-        house_number    = COALESCE($10, house_number),
-        gps_lat         = COALESCE($11, gps_lat),
-        gps_lng         = COALESCE($12, gps_lng),
-        connection_date = COALESCE($13, connection_date),
-        notes           = COALESCE($14, notes),
-        updated_by      = $15,
-        updated_at      = NOW()
-      WHERE id = $16
+        full_name                = COALESCE($1,  full_name),
+        email                    = COALESCE($2,  email),
+        phone                    = COALESCE($3,  phone),
+        address                  = COALESCE($4,  address),
+        city                     = COALESCE($5,  city),
+        district                 = COALESCE($6,  district),
+        tariff_type              = COALESCE($7,  tariff_type),
+        account_status           = COALESCE($8,  account_status),
+        national_id              = COALESCE($9,  national_id),
+        address_ref              = COALESCE($10, address_ref),
+        zone_id                  = COALESCE($11, zone_id),
+        gps_lat                  = COALESCE($12, gps_lat),
+        gps_lng                  = COALESCE($13, gps_lng),
+        connection_date          = COALESCE($14, connection_date),
+        notes                    = COALESCE($15, notes),
+        mobile_money_number      = COALESCE($16, mobile_money_number),
+        owner_name               = COALESCE($17, owner_name),
+        preferred_payment_method = COALESCE($18, preferred_payment_method),
+        priority                 = COALESCE($19, priority),
+        updated_by               = $20,
+        updated_at               = NOW()
+      WHERE id = $21
       RETURNING *
     `, [
       full_name, email, phone, address, city, district, tariff_type, account_status,
-      national_id, house_number,
+      national_id, address_ref !== undefined ? (address_ref || null) : null,
+      zone_id !== undefined ? (zone_id || null) : null,
       gps_lat !== undefined ? gps_lat : null,
       gps_lng !== undefined ? gps_lng : null,
       connection_date || null, notes,
+      mobile_money_number !== undefined ? (mobile_money_number || null) : null,
+      owner_name !== undefined ? (owner_name || null) : null,
+      preferred_payment_method || null,
+      priority || null,
       req.user?.id || null,
       req.params.id
     ]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Customer not found' });
 
-    // Build diff — only log fields that actually changed
     const updated = r.rows[0];
     const changed = {};
-    const tracked = ['full_name','email','phone','address','city','tariff_type','account_status','national_id','house_number','gps_lat','gps_lng','connection_date'];
+    const tracked = [
+      'full_name','email','phone','address','city','tariff_type','account_status',
+      'national_id','address_ref','zone_id','gps_lat','gps_lng','connection_date',
+      'mobile_money_number','owner_name','preferred_payment_method','priority',
+    ];
     for (const f of tracked) {
       const before = old[f] == null ? null : String(old[f]);
       const after  = updated[f] == null ? null : String(updated[f]);
@@ -334,7 +400,7 @@ router.post(
   }
 );
 
-// GET /customers/:id/activity — timeline from audit_log + invoices + payments + meters
+// GET /customers/:id/activity
 router.get('/:id/activity', authenticate, async (req, res) => {
   try {
     const id = req.params.id;

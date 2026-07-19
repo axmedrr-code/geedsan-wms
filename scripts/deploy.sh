@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# GEEDSAN WMS - Production Deployment Script
-# This script initializes a fresh GEEDSAN deployment
+# NUWACO WMS - Production Deployment Script
+# This script initializes a fresh NUWACO WMS deployment
 
 set -e
 
-echo "🚀 GEEDSAN WMS - Production Initialization Script"
+echo "🚀 NUWACO WMS - Production Initialization Script"
 echo "=================================================="
 
 # Check Docker

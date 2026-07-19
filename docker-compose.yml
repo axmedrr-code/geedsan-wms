@@ -34,10 +34,10 @@ services:
       test: ["CMD-SHELL", "pg_isready -U geedsan -d geedsan_wms"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      # 10 s grace before failures count — postgres is fast to start but the
-      # first WAL recovery pass can add a few seconds on a dirty shutdown.
-      start_period: 10s
+      retries: 10
+      # 30 s grace covers WAL recovery after an unclean Windows shutdown
+      # (dirty shutdown → WAL replay can take 15-20 s on a cold reboot).
+      start_period: 30s
 
   backend:
     build:
@@ -48,7 +48,7 @@ services:
       # Docker Desktop on Windows sometimes reuses a stale cached image even when
       # source files change — causing the old binary to run instead of the new one.
       args:
-        CACHEBUST: "20260721-reports-dl"
+        CACHEBUST: "20260718-smart-meter-parts1-5"
     container_name: geedsan-backend
     restart: unless-stopped
     # 30 s grace lets in-flight HTTP requests complete before Node exits.
@@ -121,13 +121,23 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       geedsan-network:
         # Static IP so nginx's upstream (server 172.28.0.5:3000) always reaches
         # the frontend, and so the frontend can't steal IPs reserved for other
         # services if it restarts while they are temporarily stopped.
         ipv4_address: 172.28.0.5
+    healthcheck:
+      # Probe the pinned bridge IP — same Docker Desktop loopback quirk as
+      # other containers (127.0.0.1 unreachable from inside the container).
+      test: ["CMD-SHELL", "wget -q -O- http://172.28.0.5:3000/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      # Next.js static export cold-starts in ~5 s; 30 s covers a slow reboot.
+      start_period: 30s
 
   nginx:
     image: nginx:1.27-alpine
@@ -168,6 +178,11 @@ services:
     command: ["odoo", "--database=odoo", "--db-filter=^odoo$$"]
     volumes:
       - ./addons:/mnt/extra-addons
+      # Persist the Odoo filestore so spreadsheet dashboard attachments and
+      # other user-uploaded files survive container restarts. Without this
+      # volume the filestore is wiped on every restart while the DB still
+      # holds store_fname references, causing JSONDecodeError on Dashboards.
+      - odoo_data:/var/lib/odoo
     environment:
       # Odoo 18 Docker image reads these same env vars as 16 (entrypoint
       # script hasn't changed).
@@ -185,7 +200,13 @@ services:
       postgres:
         condition: service_healthy
     networks:
-      - geedsan-network
+      geedsan-network:
+        # Static IP prevents Docker IPAM from assigning 172.28.0.2 (postgres's
+        # reserved address) to odoo when Docker Engine restarts unless-stopped
+        # containers on boot before postgres can claim its own IP. Without this,
+        # odoo grabbed .2 on reboot → postgres failed with "Address already in
+        # use" → entire WMS down.
+        ipv4_address: 172.28.0.6
 
   mosquitto:
     image: eclipse-mosquitto:2
@@ -294,3 +315,4 @@ volumes:
   mosquitto_log:
   redis_data:
   backups_data:
+  odoo_data:

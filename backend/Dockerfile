@@ -2,32 +2,34 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# postgresql-client provides pg_dump for scheduled and manual database backups
-RUN apk add --no-cache postgresql-client
+# postgresql-client provides pg_dump used by backup scripts at runtime.
+# Create the non-root user in the same layer to keep the image lean.
+RUN apk add --no-cache postgresql-client \
+    && addgroup -S appgroup \
+    && adduser -S appuser -G appgroup
 
-# Install dependencies (cached unless package.json changes)
+# Install production dependencies only.
+# --omit=dev is the current equivalent of the deprecated --only=production.
+# Copying package files before source ensures this layer is cached unless
+# dependencies actually change — no CACHEBUST workaround needed on Linux.
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
-# CACHEBUST: changing this ARG in docker-compose.yml build.args forces Docker
-# to invalidate every layer below this point and re-copy all source files.
-# This is the fix for Docker Desktop / Windows where COPY src layer cache is
-# not always invalidated when source files change on the host filesystem.
-# To force a rebuild: update the CACHEBUST value in docker-compose.yml.
-ARG CACHEBUST=1
-RUN echo "Build ID: $CACHEBUST"
-
-# Copy source (cache-busted by ARG above when CACHEBUST changes)
+# Copy application source
 COPY src ./src
 COPY scripts ./scripts
 COPY migrations ./migrations
 
-# Create required directories
-RUN mkdir -p /app/uploads /app/reports /app/logs
+# Create runtime directories while still root, then transfer full ownership
+# before switching user. Docker-named volumes mounted over these paths inherit
+# the directory ownership set here when first created.
+RUN mkdir -p /app/uploads /app/reports /app/logs /app/backups \
+    && chown -R appuser:appgroup /app
+
+USER appuser
 
 EXPOSE 5000
 
-# Healthcheck using Node.js (no external dependencies)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD node -e "require('http').get('http://localhost:5000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)}).on('error', (e) => {throw e})" || exit 1
 

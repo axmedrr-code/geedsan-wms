@@ -1,25 +1,63 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
-  <!-- Add a WMS tab to the standard partner form via xpath -->
+  <!-- Phase-2: Smart button + master record banner + full WMS field set -->
   <record id="view_partner_form_wms" model="ir.ui.view">
     <field name="name">res.partner.form.wms</field>
     <field name="model">res.partner</field>
     <field name="inherit_id" ref="base.view_partner_form"/>
     <field name="arch" type="xml">
+
+      <!-- Smart button: opens customer record in NUWACO WMS (new tab) -->
+      <xpath expr="//div[@name='button_box']" position="inside">
+        <button name="action_open_in_wms" type="object"
+                class="oe_stat_button" icon="fa-external-link"
+                invisible="not wms_customer_id">
+          <div class="o_stat_info">
+            <span class="o_stat_text">Open in</span>
+            <span class="o_stat_text">NUWACO WMS</span>
+          </div>
+        </button>
+      </xpath>
+
+      <!-- Master-record banner: shown only for water customers -->
+      <xpath expr="//sheet/div[@name='button_box']" position="before">
+        <div class="alert alert-info mb-0" role="alert"
+             invisible="not is_water_customer">
+          <strong>Master Record: NUWACO WMS</strong> &#8212;
+          Customer information is managed by NUWACO WMS.
+          To edit customer details, use the
+          <a href="#" onclick="return false;">NUWACO WMS</a> application.
+          This record is synchronised automatically; changes made here
+          may be overwritten on the next sync.
+        </div>
+      </xpath>
+
+      <!-- WMS tab: full field set -->
       <xpath expr="//notebook" position="inside">
         <page string="WMS" name="wms_tab">
           <group>
-            <group string="WMS Reference">
+            <group string="Identity">
               <field name="is_water_customer"/>
               <field name="wms_customer_number"/>
               <field name="wms_customer_id" readonly="1"/>
+              <field name="wms_national_id"/>
+              <field name="wms_house_number"/>
+            </group>
+            <group string="Service">
               <field name="wms_tariff_type"/>
               <field name="wms_account_status"/>
+              <field name="wms_primary_meter" readonly="1"/>
+              <field name="wms_connection_date" readonly="1"/>
             </group>
-            <group string="Meters">
-              <field name="wms_meter_count" readonly="1"/>
-            </group>
+          </group>
+          <group string="GPS Location">
+            <field name="wms_gps_lat"/>
+            <field name="wms_gps_lng"/>
+          </group>
+          <group string="Sync">
+            <field name="wms_last_sync" readonly="1"/>
+            <field name="wms_meter_count" readonly="1"/>
           </group>
           <field name="wms_meter_ids" readonly="1">
             <list>
@@ -34,6 +72,7 @@
           </field>
         </page>
       </xpath>
+
     </field>
   </record>
 
@@ -47,10 +86,12 @@
         <field name="wms_customer_number"/>
         <field name="wms_tariff_type"/>
         <field name="wms_account_status"/>
+        <field name="wms_primary_meter"/>
         <field name="wms_meter_count"/>
         <field name="email"/>
         <field name="phone"/>
         <field name="city"/>
+        <field name="wms_last_sync"/>
       </list>
     </field>
   </record>

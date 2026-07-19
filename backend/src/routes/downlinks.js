@@ -83,24 +83,95 @@ router.post('/config', authenticate, authorize('admin', 'operator'), async (req,
   } catch (err) { res.status(500).json({ error: 'Failed to send config command', details: err.message }); }
 });
 
+// Helper: append a step to lifecycle_log in an existing command row
+const appendLifecycleLog = async (commandId, step) => {
+  await query(
+    `UPDATE downlink_commands
+        SET lifecycle_log = lifecycle_log || $1::jsonb
+      WHERE id = $2`,
+    [JSON.stringify([{ ...step, at: new Date().toISOString() }]), commandId]
+  );
+};
+
 router.post('/valve', authenticate, authorize('admin', 'operator'), async (req, res) => {
   try {
     const { meter_id, command_type, f_port = 5 } = req.body;
-    if (!meter_id || !command_type || !VALVE_COMMANDS[command_type]) return res.status(400).json({ error: 'Invalid request' });
+    if (!meter_id || !command_type || !VALVE_COMMANDS[command_type])
+      return res.status(400).json({ error: 'Invalid request' });
+
     const mr = await query('SELECT id,device_eui,meter_number FROM meters WHERE id=$1', [meter_id]);
     if (!mr.rows[0]) return res.status(404).json({ error: 'Meter not found' });
     const meter = mr.rows[0];
     const command = VALVE_COMMANDS[command_type];
     const base64Data = hexToBase64(command.hex);
-    const cmdR = await query(`INSERT INTO downlink_commands(meter_id,device_eui,command_type,command_hex,command_base64,f_port,status,sent_by,sent_at) VALUES($1,$2,$3,$4,$5,$6,'pending',$7,NOW()) RETURNING *`, [meter_id, meter.device_eui, command_type, command.hex, base64Data, f_port, req.user.id]);
+
+    const initLog = JSON.stringify([
+      { state: 'created',  at: new Date().toISOString(), by: req.user.id },
+      { state: 'queued',   at: new Date().toISOString() },
+    ]);
+
+    // Insert with state 'queued' and initial lifecycle_log
+    const cmdR = await query(
+      `INSERT INTO downlink_commands
+         (meter_id, device_eui, command_type, command_hex, command_base64, f_port,
+          status, sent_by, sent_at, lifecycle_log)
+       VALUES ($1,$2,$3,$4,$5,$6,'queued',$7,NOW(),$8::jsonb)
+       RETURNING *`,
+      [meter_id, meter.device_eui, command_type, command.hex, base64Data, f_port, req.user.id, initLog]
+    );
+    const cmdId = cmdR.rows[0].id;
+
     const { status: sendStatus, chirpstackId, errorMessage } = await sendDownlink(meter.device_eui, base64Data, f_port);
+
     if (sendStatus === 'sent') {
-      const newValveStatus = command_type === 'open_valve' ? 'open' : command_type === 'close_valve' ? 'closed' : 'unknown';
-      await query('UPDATE meters SET valve_status=$1,updated_at=NOW() WHERE id=$2', [newValveStatus, meter_id]);
+      // Mark sent — valve_status NOT updated yet; wait for telemetry confirmation
+      const timeoutAt = new Date(Date.now() + 10 * 60 * 1000);
+      await query(
+        `UPDATE downlink_commands
+            SET status='sent', chirpstack_id=$1, timeout_at=$2
+          WHERE id=$3`,
+        [chirpstackId, timeoutAt, cmdId]
+      );
+      await appendLifecycleLog(cmdId, { state: 'sent', chirpstack_id: chirpstackId });
+    } else {
+      await query(
+        `UPDATE downlink_commands
+            SET status='failed', error_message=$1, next_retry_at=$2
+          WHERE id=$3`,
+        [errorMessage, new Date(Date.now() + 5 * 60 * 1000), cmdId]
+      );
+      await appendLifecycleLog(cmdId, { state: 'failed', error: errorMessage });
     }
-    await query('UPDATE downlink_commands SET status=$1,chirpstack_id=$2,error_message=$3,next_retry_at=$4 WHERE id=$5', [sendStatus, chirpstackId, errorMessage, sendStatus === 'failed' ? new Date(Date.now() + 5 * 60 * 1000) : null, cmdR.rows[0].id]);
-    res.json({ success: sendStatus === 'sent', command: { id: cmdR.rows[0].id, type: command_type, description: command.description, hex: command.hex, base64: base64Data, fPort: f_port, status: sendStatus, deviceEui: meter.device_eui }, error: errorMessage });
+
+    const finalCmd = (await query('SELECT * FROM downlink_commands WHERE id=$1', [cmdId])).rows[0];
+    res.json({
+      success: sendStatus === 'sent',
+      command: {
+        id: finalCmd.id, type: command_type, description: command.description,
+        hex: command.hex, base64: base64Data, fPort: f_port,
+        status: finalCmd.status, deviceEui: meter.device_eui,
+        lifecycle_log: finalCmd.lifecycle_log,
+      },
+      error: errorMessage,
+      note: 'Valve status will only update once telemetry confirms the valve has changed state.',
+    });
   } catch (err) { res.status(500).json({ error: 'Failed to send command', details: err.message }); }
+});
+
+// ── Cancel a pending/sent valve command ───────────────────────────────────────
+router.patch('/:id/cancel', authenticate, authorize('admin', 'operator'), async (req, res) => {
+  try {
+    const r = await query(
+      `UPDATE downlink_commands
+          SET status='cancelled'
+        WHERE id=$1 AND status IN ('queued','pending','sent')
+        RETURNING *`,
+      [req.params.id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Command not found or already in terminal state' });
+    await appendLifecycleLog(r.rows[0].id, { state: 'cancelled', by: req.user.id });
+    res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ error: 'Failed to cancel command' }); }
 });
 
 router.get('/', authenticate, async (req, res) => {

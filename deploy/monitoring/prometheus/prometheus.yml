@@ -1,0 +1,121 @@
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  scrape_timeout:      10s
+
+  external_labels:
+    monitor:     'nuwaco-wms'
+    environment: 'production'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+      timeout: 5s
+
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+scrape_configs:
+
+  # ── Prometheus self ───────────────────────────────────────────────────────
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # ── Alertmanager ─────────────────────────────────────────────────────────
+  - job_name: 'alertmanager'
+    static_configs:
+      - targets: ['alertmanager:9093']
+
+  # ── Host metrics (CPU, RAM, disk, network) ────────────────────────────────
+  - job_name: 'node_exporter'
+    static_configs:
+      - targets: ['node_exporter:9100']
+        labels:
+          instance: 'wms-host'
+
+  # ── Docker container metrics ──────────────────────────────────────────────
+  - job_name: 'cadvisor'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres_exporter:9187']
+        labels:
+          instance: 'geedsan-postgres'
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis_exporter:9121']
+        labels:
+          instance: 'geedsan-redis'
+
+  # ── Nginx (requires stub-status.conf mounted in nginx container) ──────────
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx_exporter:9113']
+        labels:
+          instance: 'geedsan-nginx'
+
+  # ── HTTP endpoint health + SSL cert expiry ────────────────────────────────
+  # blackbox's http_2xx module also captures probe_ssl_earliest_cert_expiry
+  - job_name: 'blackbox_http'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://wms.geedsan.com
+          - https://api.geedsan.com/health
+          - https://odoo.geedsan.com/web/login
+          - https://lns.geedsan.com
+        labels:
+          group: 'endpoints'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox_exporter:9115
+
+  # ── MQTT connectivity (TCP probe) ─────────────────────────────────────────
+  - job_name: 'blackbox_tcp'
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets:
+          - mosquitto:1883
+        labels:
+          group: 'mqtt'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox_exporter:9115
+
+  # ── ChirpStack API health ─────────────────────────────────────────────────
+  - job_name: 'blackbox_chirpstack'
+    metrics_path: /probe
+    params:
+      module: [http_any]
+    static_configs:
+      - targets:
+          - http://chirpstack:8080/api
+        labels:
+          group: 'internal'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox_exporter:9115

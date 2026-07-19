@@ -155,8 +155,8 @@ router.post('/test/chirpstack', authenticate, authorize(...WRITE_ROLES), async (
 router.post('/test/odoo', authenticate, authorize(...WRITE_ROLES), async (req, res) => {
   try {
     const status = await getOdooStatus();
-    if (status?.connected) {
-      res.json({ success: true, message: `Connected — Odoo ${status.version || ''}`, status });
+    if (status?.ok) {
+      res.json({ success: true, message: `Connected — Odoo ${status.odoo?.server_version || ''}`, status });
     } else {
       res.json({ success: false, message: status?.error || 'Connection failed', status });
     }

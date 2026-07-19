@@ -6,7 +6,7 @@ const sendEmail = async (to, subject, htmlBody) => {
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) return false;
   try {
     const transporter = nodemailer.createTransporter({ host: process.env.EMAIL_HOST||'smtp.gmail.com', port: parseInt(process.env.EMAIL_PORT)||587, secure: false, auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS } });
-    await transporter.sendMail({ from: process.env.EMAIL_FROM||'GEEDSAN WMS <noreply@geedsan.com>', to, subject, html: htmlBody });
+    await transporter.sendMail({ from: process.env.EMAIL_FROM||'NUWACO WMS <noreply@nuwaco.com>', to, subject, html: htmlBody });
     return true;
   } catch (err) { console.error('Email error:', err.message); return false; }
 };
@@ -30,7 +30,7 @@ const sendWhatsApp = async (recipient, message) => {
 const sendNotification = async (alarm, meter) => {
   try {
     const settings = await query(`SELECT ns.*,u.email FROM notification_settings ns JOIN users u ON ns.user_id=u.id WHERE ns.is_active=true AND ns.enabled_alarms::jsonb ? $1`, [alarm.alarm_type]);
-    const subject = `GEEDSAN Alert: ${alarm.alarm_type.replace(/_/g,' ')} - Meter ${meter?.meter_number||alarm.device_eui}`;
+    const subject = `NUWACO WMS Alert: ${alarm.alarm_type.replace(/_/g,' ')} - Meter ${meter?.meter_number||alarm.device_eui}`;
     const message = `Alarm: ${alarm.alarm_type}\nSeverity: ${alarm.severity}\nMeter: ${meter?.meter_number||'N/A'}\nMessage: ${alarm.message}`;
     for (const s of settings.rows) {
       let success = false, errorMessage = null;
@@ -81,7 +81,7 @@ const buildBillingMessage = (eventType, invoice, customer, payment) => {
   switch (eventType) {
     case 'invoice_created':
       return {
-        subject: `GEEDSAN: New Invoice ${invNo} for ${name}`,
+        subject: `NUWACO WMS: New Invoice ${invNo} for ${name}`,
         text: `A new invoice has been created.\n\nCustomer: ${name}\nInvoice No: ${invNo}\nAmount: ${total}\nDue Date: ${dueDate}`,
       };
     case 'payment_received': {
@@ -89,18 +89,18 @@ const buildBillingMessage = (eventType, invoice, customer, payment) => {
       const method = payment ? (payment.method || payment.payment_method || 'N/A') : 'N/A';
       const ref    = payment ? (payment.reference || payment.reference_number || '') : '';
       return {
-        subject: `GEEDSAN: Payment Received – Invoice ${invNo}`,
+        subject: `NUWACO WMS: Payment Received – Invoice ${invNo}`,
         text: `A payment has been received.\n\nCustomer: ${name}\nInvoice No: ${invNo}\nPaid: ${paid}\nMethod: ${method}${ref ? `\nReference: ${ref}` : ''}`,
       };
     }
     case 'invoice_overdue':
       return {
-        subject: `GEEDSAN: Overdue Invoice ${invNo} – ${name}`,
+        subject: `NUWACO WMS: Overdue Invoice ${invNo} – ${name}`,
         text: `An invoice is overdue.\n\nCustomer: ${name}\nInvoice No: ${invNo}\nAmount Due: ${total}\nDue Date: ${dueDate}`,
       };
     default:
       return {
-        subject: `GEEDSAN: Billing Event (${eventType})`,
+        subject: `NUWACO WMS: Billing Event (${eventType})`,
         text:    `Billing event type: ${eventType}`,
       };
   }

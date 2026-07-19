@@ -7,47 +7,157 @@ const odoo = require('./odooXmlRpcClient');
 // Uses customer_number when present; falls back to a WMS-prefixed UUID slice
 // so the idempotency search in Odoo never runs against an empty string.
 const effectiveRef = (customer) => {
-  const cn = customer.customer_number;
-  return (cn && typeof cn === 'string' && cn.trim())
-    ? cn.trim()
+  const hn = customer.house_number;
+  return (hn && typeof hn === 'string' && hn.trim())
+    ? hn.trim()
     : `WMS-${customer.id.slice(0, 8).toUpperCase()}`;
 };
 
-// Optional second argument accepts injected _query/_odoo for unit tests.
-// All production callers pass only customerId and rely on the defaults.
-const syncCustomerToOdoo = async (customerId, { _query = query, _odoo = odoo } = {}) => {
-  const customerResult = await _query('SELECT * FROM customers WHERE id=$1', [customerId]);
-  const customer = customerResult.rows[0];
-  if (!customer) throw new Error('Customer not found');
+// WMS account_status → Odoo wms_account_status selection value.
+// WMS uses 'inactive'; Odoo selection now includes it (phase-2 addon).
+const mapAccountStatus = (status) => {
+  const allowed = { active: 'active', inactive: 'inactive', suspended: 'suspended', terminated: 'terminated' };
+  return allowed[status] || 'active';
+};
 
-  const ref = effectiveRef(customer);
+// Builds the HTML master-record note written to the partner's comment field.
+// This displays in Odoo under the Notes tab to remind users WMS is the master.
+const buildMasterRecordComment = (customer, primaryMeter, wmsUrl) => {
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+  const url = `${wmsUrl.replace(/\/+$/, '')}/dashboard/customers/${customer.id}`;
+  return [
+    '<div>',
+    '<h4 style="color:#0066cc;margin:0 0 8px;">&#9888;&#65039; Master Record: NUWACO WMS</h4>',
+    '<p style="margin:0 0 6px;">Customer information is managed by <strong>NUWACO WMS</strong>.',
+    ' To edit customer details, use the NUWACO WMS application.',
+    ' Changes made here may be overwritten on the next synchronisation.</p>',
+    `<p style="margin:0 0 6px;"><strong>House Number:</strong> ${customer.house_number || '&#8212;'}`,
+    ` &nbsp;|&nbsp; <strong>Primary Meter:</strong> ${primaryMeter || '&#8212;'}</p>`,
+    `<p style="margin:0 0 6px;"><strong>Last Sync:</strong> ${now}</p>`,
+    `<p style="margin:0;"><a href="${url}" target="_blank">&#8594; Open in NUWACO WMS</a></p>`,
+    '</div>',
+  ].join('');
+};
 
-  const payload = {
-    name: customer.full_name,
-    ref,
-    email: customer.email || false,
-    phone: customer.phone || false,
-    street: customer.address || false,
-    city: customer.city || false,
-    is_company: false,
-    customer_rank: 1
-  };
-
-  let odooId = customer.odoo_id ? parseInt(customer.odoo_id, 10) : null;
-  if (odooId) {
-    await _odoo.execute('res.partner', 'write', [[odooId], payload]);
-  } else {
-    const existing = await _odoo.execute('res.partner', 'search', [[['ref', '=', ref]]]);
-    if (existing.length) {
-      odooId = existing[0];
-      await _odoo.execute('res.partner', 'write', [[odooId], payload]);
-    } else {
-      odooId = await _odoo.execute('res.partner', 'create', [payload]);
-    }
-    await _query('UPDATE customers SET odoo_id=$1, updated_at=NOW() WHERE id=$2', [String(odooId), customerId]);
+// Writes a row to odoo_sync_log. Best-effort: errors are swallowed so a log
+// failure never masks the underlying sync result.
+const writeOdooSyncLog = async (_query, { entityId, odooId, action, status, error, durationMs, fieldsChanged }) => {
+  try {
+    await _query(
+      `INSERT INTO odoo_sync_log
+         (entity_type, entity_id, odoo_id, action, status, error, duration_ms, fields_changed, created_at)
+       VALUES ('customer', $1, $2, $3, $4, $5, $6, $7, NOW())`,
+      [
+        entityId,
+        odooId ? String(odooId) : null,
+        action,
+        status,
+        error || null,
+        durationMs,
+        fieldsChanged ? JSON.stringify(fieldsChanged) : null,
+      ]
+    );
+  } catch (logErr) {
+    logger.warn('Failed to write odoo_sync_log', { error: logErr.message, entityId });
   }
+};
 
-  return { customerId, odooId, payload };
+// Full phase-2 customer sync.
+// UPSERT priority: cached odoo_id → search by wms_customer_id (UUID) → search by ref → create.
+// Syncs 11 WMS custom fields + standard partner fields.
+// Sets the partner comment with a master-record note.
+// Writes every attempt (success or failure) to odoo_sync_log.
+const syncCustomerToOdoo = async (customerId, { _query = query, _odoo = odoo } = {}) => {
+  const start = Date.now();
+  let odooId = null;
+  let action = 'update';
+
+  try {
+    const customerResult = await _query('SELECT * FROM customers WHERE id=$1', [customerId]);
+    const customer = customerResult.rows[0];
+    if (!customer) throw new Error('Customer not found');
+
+    // Primary active meter for this customer (oldest active assignment)
+    const meterResult = await _query(
+      `SELECT meter_number FROM meters WHERE customer_id=$1 AND status='active' ORDER BY created_at ASC LIMIT 1`,
+      [customerId]
+    );
+    const primaryMeter = meterResult.rows[0]?.meter_number || null;
+
+    // Publish WMS URL to Odoo ir.config_parameter so the smart button reads it.
+    const wmsUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    try {
+      await _odoo.execute('ir.config_parameter', 'set_param', ['nuwaco.wms_url', wmsUrl]);
+    } catch (_) { /* best-effort — never block sync for a config write failure */ }
+
+    const ref = effectiveRef(customer);
+
+    const payload = {
+      // Standard partner fields
+      name:          customer.full_name,
+      ref,
+      email:         customer.email         || false,
+      phone:         customer.phone         || false,
+      street:        customer.address       || false,
+      city:          customer.city          || false,
+      is_company:    false,
+      customer_rank: 1,
+      // WMS master-record fields
+      is_water_customer:    true,
+      wms_customer_id:      customer.id,
+      wms_customer_number:  customer.house_number     || false,
+      wms_tariff_type:      customer.tariff_type      || 'residential',
+      wms_account_status:   mapAccountStatus(customer.account_status),
+      wms_primary_meter:    primaryMeter              || false,
+      wms_national_id:      customer.national_id      || false,
+      wms_house_number:     customer.address_ref      || false,
+      wms_gps_lat:          customer.gps_lat  !== null && customer.gps_lat  !== undefined ? Number(customer.gps_lat)  : false,
+      wms_gps_lng:          customer.gps_lng  !== null && customer.gps_lng  !== undefined ? Number(customer.gps_lng)  : false,
+      wms_connection_date:  toOdooDate(customer.connection_date),
+      wms_last_sync:        toOdooDatetime(new Date()),
+      comment:              buildMasterRecordComment(customer, primaryMeter, wmsUrl),
+    };
+
+    const fieldsChanged = Object.keys(payload);
+
+    // UPSERT: cached odoo_id → by UUID → by ref → create
+    odooId = customer.odoo_id ? parseInt(customer.odoo_id, 10) : null;
+
+    if (!odooId) {
+      const byUuid = await _odoo.execute('res.partner', 'search', [[['wms_customer_id', '=', customer.id]]]);
+      if (byUuid.length) {
+        odooId = byUuid[0];
+      } else {
+        const byRef = await _odoo.execute('res.partner', 'search', [[['ref', '=', ref]]]);
+        if (byRef.length) {
+          odooId = byRef[0];
+        } else {
+          action = 'create';
+        }
+      }
+    }
+
+    if (action === 'create') {
+      odooId = await _odoo.execute('res.partner', 'create', [payload]);
+    } else {
+      await _odoo.execute('res.partner', 'write', [[odooId], payload]);
+    }
+
+    // Write odoo_id back to WMS if not already stored (or if it changed)
+    if (!customer.odoo_id || String(customer.odoo_id) !== String(odooId)) {
+      await _query('UPDATE customers SET odoo_id=$1, updated_at=NOW() WHERE id=$2', [String(odooId), customerId]);
+    }
+
+    const duration = Date.now() - start;
+    await writeOdooSyncLog(_query, { entityId: customerId, odooId, action, status: 'completed', durationMs: duration, fieldsChanged });
+
+    return { customerId, odooId, action, fieldsChanged, duration };
+
+  } catch (err) {
+    const duration = Date.now() - start;
+    await writeOdooSyncLog(_query, { entityId: customerId, odooId, action, status: 'failed', error: err.message, durationMs: duration, fieldsChanged: null });
+    throw err;
+  }
 };
 
 const syncProductToOdoo = async (productId) => {
@@ -164,6 +274,9 @@ const syncInvoiceToOdoo = async (invoiceId, { _query = query, _odoo = odoo, _syn
   return { invoiceId, odooId: moveId, invoiceNumber: invoice.invoice_number, customerId: invoice.customer_id, partnerId: customerSync.odooId, branch, payload: movePayload };
 };
 
+// WMS payment method → Odoo journal type mapping
+const WMS_METHOD_TO_JOURNAL = { cash: 'cash', pos: 'cash', sahal: 'cash', evc: 'cash', other: 'cash', bank: 'bank', cheque: 'bank', adjustment: 'bank' };
+
 const syncPaymentToOdoo = async (paymentId) => {
   const paymentR = await query('SELECT * FROM invoice_payments WHERE id=$1', [paymentId]);
   const payment = paymentR.rows[0];
@@ -175,79 +288,28 @@ const syncPaymentToOdoo = async (paymentId) => {
   if (!invoice) throw new Error('Invoice not found for payment');
   if (!invoice.odoo_id) await syncInvoiceToOdoo(invoice.id);
 
-  const refreshedInvoice = await query('SELECT odoo_id, customer_id FROM invoices WHERE id=$1', [invoice.id]);
-  const customer = await query('SELECT odoo_id FROM customers WHERE id=$1', [refreshedInvoice.rows[0].customer_id]);
-  const partnerId = parseInt(customer.rows[0].odoo_id, 10);
+  const refreshedR = await query('SELECT odoo_id FROM invoices WHERE id=$1', [invoice.id]);
+  const odooMoveId = parseInt(refreshedR.rows[0]?.odoo_id, 10);
+  if (!odooMoveId) throw new Error('Invoice not in Odoo after sync');
 
-  // Prefer 'cash' journal matching WMS payment method, fall back to 'bank'.
-  // Odoo 18 requires payment_method_line_id at payment creation.
-  let journalType = (payment.method === 'cash') ? 'cash' : 'bank';
-  let journals = await odoo.execute('account.journal', 'search', [[['type', '=', journalType]]], { limit: 1 });
-  if (!journals.length) {
-    journals = await odoo.execute('account.journal', 'search', [[['type', 'in', ['bank', 'cash']]]], { limit: 1 });
-  }
-  if (!journals.length) throw new Error('No bank or cash journal found in Odoo');
-  const journalId = journals[0];
+  const jType = WMS_METHOD_TO_JOURNAL[payment.method] || 'cash';
+  const memo  = payment.reference
+    ? `${payment.reference}${payment.note ? ' — ' + payment.note : ''}`
+    : (payment.note || `WMS Payment for ${invoice.invoice_number}`);
 
-  // Odoo 18: fetch the inbound payment method line for this journal (required field)
-  const methodLines = await odoo.execute('account.payment.method.line', 'search_read',
-    [[['journal_id', '=', journalId], ['payment_type', '=', 'inbound']]],
-    { fields: ['id'], limit: 1 }
-  );
-  if (!methodLines.length) throw new Error('No inbound payment method line found for journal ' + journalId);
+  const result = await registerPaymentOnOdooMove(odooMoveId, {
+    _query: query,
+    _odoo:  odoo,
+    amount: Number(payment.amount),
+    journalType: jType,
+    memo,
+  });
 
-  const payDate = payment.payment_date
-    ? new Date(payment.payment_date).toISOString().slice(0, 10)
-    : new Date().toISOString().slice(0, 10);
-
-  const paymentOdooId = await odoo.execute('account.payment', 'create', [{
-    payment_type:           'inbound',
-    partner_type:           'customer',
-    partner_id:             partnerId,
-    amount:                 Number(payment.amount),
-    date:                   payDate,
-    journal_id:             journalId,
-    payment_method_line_id: methodLines[0].id,
-    memo: payment.reference
-      ? `${payment.reference}${payment.note ? ' — ' + payment.note : ''}`
-      : (payment.note || `Payment for ${invoice.invoice_number}`),
-  }]);
-
-  // Odoo 18: action_post succeeds but its return value (an action dict) contains None fields
-  // that the strict XML-RPC marshaler rejects.  The payment IS posted despite the fault.
-  // Verify state explicitly rather than trusting the return value.
-  try {
-    await odoo.execute('account.payment', 'action_post', [[paymentOdooId]]);
-  } catch (postErr) {
-    if (!postErr.message.includes('cannot marshal None')) throw postErr;
-    const stateR = await odoo.execute('account.payment', 'read', [[paymentOdooId], ['state']]);
-    const state = stateR[0]?.state;
-    if (!['in_process', 'posted', 'reconciled'].includes(state)) {
-      throw new Error(`action_post for payment ${paymentOdooId} failed and state is "${state}": ${postErr.message.slice(0, 200)}`);
-    }
-  }
-
-  // Reconcile the payment against the invoice's AR move line so Odoo shows payment_state='paid'.
-  // This matches exactly what the UI's "Register Payment" wizard does.
-  if (invoice.odoo_id) {
-    const invMoveId = parseInt(invoice.odoo_id, 10);
-    const invLines = await odoo.execute('account.move.line', 'search_read',
-      [[['move_id', '=', invMoveId], ['account_id.account_type', '=', 'asset_receivable'], ['reconciled', '=', false]]],
-      { fields: ['id'], limit: 1 }
-    );
-    const payLines = await odoo.execute('account.move.line', 'search_read',
-      [[['payment_id', '=', paymentOdooId], ['account_id.account_type', '=', 'asset_receivable'], ['reconciled', '=', false]]],
-      { fields: ['id'], limit: 1 }
-    );
-    if (invLines.length && payLines.length) {
-      await odoo.execute('account.move.line', 'reconcile', [[invLines[0].id, payLines[0].id]])
-        .catch(() => {}); // idempotent: silently ignore "already reconciled"
-    }
-  }
+  const paymentOdooId = result.odooPaymentId;
+  if (!paymentOdooId) throw new Error('Odoo payment wizard did not return a payment ID (invoice may already be fully paid)');
 
   await query('UPDATE invoice_payments SET odoo_id=$1 WHERE id=$2', [String(paymentOdooId), paymentId]);
-
-  return { paymentId, odooId: paymentOdooId };
+  return { paymentId, odooId: paymentOdooId, odooMoveId, paymentStateAfter: result.paymentStateAfter };
 };
 
 // Odoo XML-RPC rejects ISO 8601 format (milliseconds + Z suffix).
@@ -528,7 +590,7 @@ const syncInvoiceFromReadingToOdoo = async (readingId, { _query = query, _odoo =
 // so reconciliation is handled automatically by Odoo.
 // Idempotency: if invoice is already fully paid, returns early without touching Odoo.
 // All payment attempts are logged to odoo_payment_log for audit and re-lookup.
-const registerPaymentOnOdooMove = async (odooMoveId, { _query = query, _odoo = odoo, amount = null } = {}) => {
+const registerPaymentOnOdooMove = async (odooMoveId, { _query = query, _odoo = odoo, amount = null, journalType = null, memo = null } = {}) => {
   const moveIdNum = Number(odooMoveId);
   if (!moveIdNum || isNaN(moveIdNum)) throw new Error('Invalid Odoo move ID');
 
@@ -551,11 +613,18 @@ const registerPaymentOnOdooMove = async (odooMoveId, { _query = query, _odoo = o
     status:         'already_paid',
   };
 
-  // 3. Journal: bank preferred, cash fallback
+  // 3. Journal: caller-specified type preferred, then bank, then cash
+  const preferredType = journalType || 'bank';
   let journals = await _odoo.execute('account.journal', 'search_read',
-    [[['type', '=', 'bank']]],
+    [[['type', '=', preferredType]]],
     { fields: ['id', 'name'], limit: 1 }
   );
+  if (!journals.length && preferredType !== 'bank') {
+    journals = await _odoo.execute('account.journal', 'search_read',
+      [[['type', '=', 'bank']]],
+      { fields: ['id', 'name'], limit: 1 }
+    );
+  }
   if (!journals.length) {
     journals = await _odoo.execute('account.journal', 'search_read',
       [[['type', '=', 'cash']]],
@@ -575,8 +644,10 @@ const registerPaymentOnOdooMove = async (odooMoveId, { _query = query, _odoo = o
   const paymentDate = new Date().toISOString().slice(0, 10);
   const ctx = { active_model: 'account.move', active_ids: [moveIdNum], active_id: moveIdNum };
 
+  const wizardPayload = { payment_date: paymentDate, amount: paymentAmount, journal_id: journal.id };
+  if (memo) wizardPayload.communication = memo;
   const wizardId = await _odoo.execute('account.payment.register', 'create',
-    [{ payment_date: paymentDate, amount: paymentAmount, journal_id: journal.id }],
+    [wizardPayload],
     { context: ctx }
   );
   await _odoo.execute('account.payment.register', 'action_create_payments', [[wizardId]], { context: ctx });
@@ -698,6 +769,104 @@ const getOdooStatus = async () => {
   }
 };
 
+// Returns a per-customer field-level verification report comparing WMS data to
+// the synced Odoo partner. Checks 10 key fields per customer.
+const verifySyncedCustomers = async () => {
+  const customersResult = await query('SELECT * FROM customers ORDER BY created_at ASC');
+  const customers = customersResult.rows;
+
+  // Last sync log entry per customer (for report metadata)
+  const logResult = await query(
+    `SELECT DISTINCT ON (entity_id) entity_id, action, status, error, duration_ms, created_at
+     FROM odoo_sync_log WHERE entity_type='customer'
+     ORDER BY entity_id, created_at DESC`
+  );
+  const logMap = {};
+  for (const row of logResult.rows) logMap[row.entity_id] = row;
+
+  const results = [];
+
+  for (const customer of customers) {
+    const entry = {
+      wms_id:          customer.id,
+      customer_number: customer.customer_number,
+      full_name:       customer.full_name,
+      odoo_id:         customer.odoo_id ? parseInt(customer.odoo_id, 10) : null,
+      last_sync_log:   logMap[customer.id] || null,
+      checks:          {},
+    };
+
+    if (!customer.odoo_id) {
+      entry.status = 'NOT_SYNCED';
+      entry.error  = 'No odoo_id — customer has not been synced yet';
+      results.push(entry);
+      continue;
+    }
+
+    try {
+      const partnerId = parseInt(customer.odoo_id, 10);
+      const partnerRows = await odoo.execute('res.partner', 'read', [[partnerId]], {
+        fields: [
+          'id', 'name', 'ref', 'email', 'phone', 'street', 'city',
+          'is_water_customer', 'wms_customer_id', 'wms_customer_number',
+          'wms_tariff_type', 'wms_account_status', 'wms_primary_meter',
+          'wms_national_id', 'wms_house_number', 'wms_last_sync',
+        ],
+      });
+
+      if (!partnerRows || !partnerRows.length) {
+        entry.status = 'FAIL';
+        entry.error  = `Odoo partner id=${partnerId} not found (may have been deleted)`;
+        results.push(entry);
+        continue;
+      }
+
+      const p = partnerRows[0];
+
+      const check = (field, wmsVal, odooVal, exact = true) => ({
+        pass: exact
+          ? String(wmsVal ?? '') === String(odooVal ?? '')
+          : !!(odooVal),
+        wms:  wmsVal  ?? null,
+        odoo: odooVal ?? null,
+      });
+
+      entry.checks.name               = check('name',               customer.full_name,                          p.name);
+      entry.checks.wms_customer_id    = check('wms_customer_id',    customer.id,                                 p.wms_customer_id);
+      entry.checks.wms_customer_number= check('wms_customer_number', customer.customer_number || '',              p.wms_customer_number || '');
+      entry.checks.wms_tariff_type    = check('wms_tariff_type',    customer.tariff_type || 'residential',       p.wms_tariff_type);
+      entry.checks.wms_account_status = check('wms_account_status', mapAccountStatus(customer.account_status),   p.wms_account_status);
+      entry.checks.is_water_customer  = check('is_water_customer',  true,                                        p.is_water_customer);
+      entry.checks.email              = check('email',              customer.email || '',                         p.email || '');
+      entry.checks.phone              = check('phone',              customer.phone || '',                         p.phone || '');
+      entry.checks.wms_last_sync      = check('wms_last_sync',      'set', p.wms_last_sync, false);  // truthy check
+      entry.checks.wms_primary_meter  = { pass: true, note: 'informational', odoo: p.wms_primary_meter || null };
+
+      const allPass  = Object.values(entry.checks).every(c => c.pass);
+      const anyFail  = Object.values(entry.checks).some(c => !c.pass);
+      entry.status   = allPass ? 'PASS' : anyFail ? 'PARTIAL' : 'PASS';
+
+    } catch (err) {
+      entry.status = 'FAIL';
+      entry.error  = err.message;
+    }
+
+    results.push(entry);
+  }
+
+  const summary = {
+    total:      results.length,
+    synced:     results.filter(r => r.odoo_id).length,
+    not_synced: results.filter(r => r.status === 'NOT_SYNCED').length,
+    pass:       results.filter(r => r.status === 'PASS').length,
+    partial:    results.filter(r => r.status === 'PARTIAL').length,
+    fail:       results.filter(r => r.status === 'FAIL').length,
+    generated_at: new Date().toISOString(),
+  };
+
+  return { summary, customers: results };
+};
+
 module.exports = {
   effectiveRef,
   syncCustomerToOdoo,
@@ -713,4 +882,5 @@ module.exports = {
   processRetryQueue,
   getOdooQueue,
   getOdooStatus,
+  verifySyncedCustomers,
 };

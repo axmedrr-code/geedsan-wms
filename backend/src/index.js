@@ -34,6 +34,11 @@ app.use(cors({
 app.use(compression());
 app.use(morgan('dev'));
 app.use(morgan('combined', { stream: { write: (msg) => logger.info(msg.trim()) } }));
+
+// Stripe webhook must receive raw body (BEFORE express.json() consumes the stream)
+const { stripeWebhookHandler } = require('./routes/paymentPortal');
+app.post('/api/portal/webhook/stripe', express.raw({ type: 'application/json' }), stripeWebhookHandler);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -73,9 +78,14 @@ app.use('/api/billing', require('./routes/billing'));
 app.use('/api/billing-cycles', require('./routes/billingCycles'));
 app.use('/api/tanker', require('./routes/tanker'));
 app.use('/api/realtime', require('./routes/realtime'));
-app.use('/api/odoo', require('./routes/odoo'));
+app.use('/api/zones',    require('./routes/zones'));
+app.use('/api/payments',        require('./routes/payments'));
+app.use('/api/tariffs',         require('./routes/tariffs'));
+app.use('/api/billing-reports', require('./routes/billingReports'));
+app.use('/api/odoo',            require('./routes/odoo'));
 app.use('/api/testing', require('./routes/testing'));
 app.use('/api/system', require('./routes/system'));
+app.use('/api/portal', require('./routes/paymentPortal').router);
 
 // Health check
 app.get('/health', async (req, res) => {
@@ -161,7 +171,7 @@ const start = async () => {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    logger.info(`🚀 GEEDSAN WMS API running on port ${PORT}`);
+    logger.info(`🚀 NUWACO WMS API running on port ${PORT}`);
     logger.info(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
     logger.info(`💾 Database: ${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`);
     logger.info(`🌐 CORS allowed: ${process.env.FRONTEND_URL}`);
