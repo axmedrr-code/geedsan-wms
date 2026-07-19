@@ -18,14 +18,10 @@ enabled_regions=[
 
 [api]
 bind="0.0.0.0:8080"
+# Placeholder — overridden at runtime by CHIRPSTACK_API__SECRET env var
+secret=""
 
 [integration]
 enabled=["mqtt"]
-
-[integration.mqtt]
-event_topic="application/{{application_id}}/device/{{dev_eui}}/event/{{event}}"
-command_topic="application/{{application_id}}/device/{{dev_eui}}/command/{{command}}"
-# Hostname — resolves correctly on Linux Docker bridge (no static IPs needed)
-server="tcp://mosquitto:1883/"
-# username and password are injected via CHIRPSTACK_INTEGRATION__MQTT__USERNAME/PASSWORD
-# environment variables in docker-compose.prod.yml
+# [integration.mqtt] sub-section is in deploy/chirpstack/secrets.toml (gitignored)
+# so credentials are not committed to the repository.

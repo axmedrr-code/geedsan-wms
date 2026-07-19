@@ -1,6 +1,7 @@
 node_modules/
 .env
 .env.local
+.env.production
 *.log
 dist/
 .next/
@@ -8,3 +9,6 @@ reports/
 uploads/
 logs/
 *.sql.bak
+backup_pre_*.sql
+docker/certs/
+deploy/chirpstack/secrets.toml

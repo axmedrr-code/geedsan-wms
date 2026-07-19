@@ -6,6 +6,8 @@ common_name="EU868"
 [regions.gateway.backend.mqtt]
 # Hostname — resolves correctly on Linux Docker bridge (no static IPs needed)
 server="tcp://mosquitto:1883/"
-# username and password are injected via
-# CHIRPSTACK_REGIONS__EU868__GATEWAY__BACKEND__MQTT__USERNAME/PASSWORD
-# environment variables in docker-compose.prod.yml
+# Gateway-backend MQTT credentials — service-to-service, internal broker only.
+# These are the chirpstack broker user credentials (see deploy/mosquitto/passwd).
+# Must match MQTT_CHIRPSTACK_USERNAME / MQTT_CHIRPSTACK_PASSWORD in .env.production.
+username="chirpstack"
+password="b914a7d84553380436a8bdd8f3828b44a99c3766"
