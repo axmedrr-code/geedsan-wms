@@ -314,7 +314,9 @@ services:
       mosquitto:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/ 2>/dev/null || exit 1"]
+      # chirpstack/chirpstack:4 is debian-slim with no wget/curl/nc installed.
+      # Check /proc/net/tcp6 for a listening socket on port 8080 (0x1F90).
+      test: ["CMD-SHELL", "grep -q ':1F90 ' /proc/net/tcp6 2>/dev/null || grep -q ':1F90 ' /proc/net/tcp 2>/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
