@@ -1,0 +1,469 @@
+#!/usr/bin/env bash
+#
+# deploy/scripts/final-deploy.sh
+# NUWACO WMS — Final Production Deployment
+#
+# Runs all 12 deployment verification and startup steps.
+# Stops only if a destructive action is required; otherwise continues
+# and reports all issues at the end.
+#
+# Usage (run as root from project root on VPS):
+#   sudo bash deploy/scripts/final-deploy.sh
+#   sudo CF_API_TOKEN="your_cloudflare_token" bash deploy/scripts/final-deploy.sh
+#
+# Prerequisites:
+#   .env.production — complete with all variables set
+#   deploy/chirpstack/secrets.toml — will be auto-created if missing
+
+set -uo pipefail
+
+# ── Config ────────────────────────────────────────────────────────────────────
+COMPOSE_FILE="docker-compose.prod.yml"
+ENV_FILE=".env.production"
+VPS_IP="169.58.43.123"
+CERT_PATH="/etc/letsencrypt/live/geedsan-wms/fullchain.pem"
+SECRETS_TOML="deploy/chirpstack/secrets.toml"
+
+# ── ANSI output ───────────────────────────────────────────────────────────────
+GRN='\033[0;32m' RED='\033[0;31m' YLW='\033[1;33m' BLU='\033[0;34m' NC='\033[0m'
+ok()   { echo -e "${GRN}  ✓${NC} $*"; }
+err()  { echo -e "${RED}  ✗${NC} $*"; }
+step() { echo -e "${YLW}  →${NC} $*"; }
+hdr()  { echo ""; echo -e "${BLU}━━ $* ━━${NC}"; }
+
+ISSUES=()
+add_issue() { ISSUES+=("$1"); }
+
+# ── Wait for a container to report healthy ─────────────────────────────────────
+wait_healthy() {
+  local name="$1" timeout="${2:-180}" elapsed=0 status
+  printf "    %-32s" "$name"
+  while (( elapsed < timeout )); do
+    status=$(docker inspect \
+      --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}running{{end}}' \
+      "$name" 2>/dev/null || echo "missing")
+    case "$status" in
+      healthy)  echo " healthy (+${elapsed}s)"; return 0 ;;
+      missing)  echo " NOT FOUND"; return 1 ;;
+    esac
+    printf "."; sleep 5; elapsed=$(( elapsed + 5 ))
+  done
+  echo " TIMEOUT (${timeout}s, last: $status)"; return 1
+}
+
+# ── Guard: must run as root ───────────────────────────────────────────────────
+if [[ $EUID -ne 0 ]]; then
+  err "Run as root: sudo bash deploy/scripts/final-deploy.sh"
+  exit 1
+fi
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  NUWACO WMS — Final Production Deployment"
+echo "  $(date '+%Y-%m-%d %H:%M:%S %Z')"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 1 — Verify .env.production"
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[ -f "$ENV_FILE" ]] || { err "$ENV_FILE not found in $(pwd)"; exit 1; }
+
+# Source file so we can use values in secrets.toml auto-generation below.
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+
+REQUIRED_VARS=(
+  DB_PASSWORD CHIRPSTACK_DB_PASSWORD APP_VERSION
+  JWT_SECRET JWT_REFRESH_SECRET FRONTEND_URL API_URL
+  ODOO_USERNAME ODOO_PASSWORD ODOO_ADMIN_PASSWORD
+  MQTT_USERNAME MQTT_PASSWORD MQTT_TOPICS
+  MQTT_CHIRPSTACK_USERNAME MQTT_CHIRPSTACK_PASSWORD
+  CHIRPSTACK_API_SECRET REDIS_PASSWORD
+  EMAIL_HOST EMAIL_PORT
+)
+MISS=0
+for v in "${REQUIRED_VARS[@]}"; do
+  val="${!v:-}"
+  if [[ -n "$val" ]]; then
+    ok "$v"
+  else
+    err "MISSING or EMPTY: $v"
+    MISS=$(( MISS + 1 ))
+  fi
+done
+
+(( MISS > 0 )) && {
+  err "$MISS variable(s) missing from $ENV_FILE."
+  err "Add the missing values and re-run this script."
+  exit 1
+}
+ok "All required env vars are set"
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 2 — Validate docker-compose config"
+# ─────────────────────────────────────────────────────────────────────────────
+
+if docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" config --quiet 2>/dev/null; then
+  ok "docker-compose.prod.yml is valid — all variables resolve"
+else
+  err "docker-compose.prod.yml config error:"
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" config 2>&1 \
+    | grep -iE "warning|error|variable" | head -15
+  exit 1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 3 — Pull latest code"
+# ─────────────────────────────────────────────────────────────────────────────
+
+git pull origin main
+COMMIT=$(git rev-parse --short HEAD)
+ok "HEAD: $COMMIT"
+
+grep -q "name: geedsan_default" docker-compose.prod.yml \
+  && ok "Production network 'geedsan_default' fix confirmed" \
+  || { err "Network name fix missing — expected 'name: geedsan_default' in docker-compose.prod.yml"; exit 1; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 4 — Ensure deploy/chirpstack/secrets.toml"
+# ─────────────────────────────────────────────────────────────────────────────
+
+if [[ ! -f "$SECRETS_TOML" ]]; then
+  step "secrets.toml missing — creating from .env.production..."
+  cat > "$SECRETS_TOML" << TOML
+# ChirpStack credential configuration — NOT COMMITTED TO GIT.
+# Auto-generated by final-deploy.sh from .env.production.
+# TOML requires that each table header appears exactly once in the
+# concatenated document. This file provides sections that do not
+# exist in chirpstack.toml or region_eu868.toml.
+
+[postgresql]
+dsn = "postgres://chirpstack:${CHIRPSTACK_DB_PASSWORD}@postgres:5432/chirpstack?sslmode=disable"
+
+[redis]
+servers = ["redis://default:${REDIS_PASSWORD}@redis:6379/1"]
+
+[integration.mqtt]
+event_topic   = "application/{{application_id}}/device/{{dev_eui}}/event/{{event}}"
+command_topic = "application/{{application_id}}/device/{{dev_eui}}/command/{{command}}"
+server        = "tcp://mosquitto:1883/"
+username      = "chirpstack"
+password      = "${MQTT_CHIRPSTACK_PASSWORD}"
+TOML
+  ok "Created $SECRETS_TOML"
+else
+  ok "$SECRETS_TOML exists"
+fi
+
+# Verify required sections are present
+MISSING_SECTIONS=0
+for section in "postgresql" "redis" "integration.mqtt"; do
+  if grep -qF "[$section]" "$SECRETS_TOML"; then
+    ok "  [$section] section present"
+  else
+    err "  [$section] section MISSING"
+    MISSING_SECTIONS=$(( MISSING_SECTIONS + 1 ))
+  fi
+done
+(( MISSING_SECTIONS > 0 )) && { err "secrets.toml is incomplete. Delete and re-run."; exit 1; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 5 — Build application images"
+# ─────────────────────────────────────────────────────────────────────────────
+
+step "Building backend image..."
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build backend
+ok "Backend image built"
+
+step "Building frontend image (NEXT_PUBLIC_API_URL=$API_URL)..."
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build frontend
+ok "Frontend image built"
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 6 — Start all services"
+# ─────────────────────────────────────────────────────────────────────────────
+
+step "Running docker compose up -d..."
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
+ok "Services started (nginx will start after backend+frontend are healthy; it requires SSL certs)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 7 — Wait for core infrastructure"
+# ─────────────────────────────────────────────────────────────────────────────
+
+CORE_FAIL=0
+wait_healthy geedsan-postgres  120 || { err "PostgreSQL failed to become healthy"; CORE_FAIL=$(( CORE_FAIL + 1 )); }
+wait_healthy geedsan-redis      60 || { err "Redis failed to become healthy";      CORE_FAIL=$(( CORE_FAIL + 1 )); }
+wait_healthy geedsan-mosquitto  60 || { err "Mosquitto failed to become healthy";  CORE_FAIL=$(( CORE_FAIL + 1 )); }
+
+if (( CORE_FAIL > 0 )); then
+  err "$CORE_FAIL core service(s) failed. Cannot continue safely."
+  step "Core service logs:"
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" logs --tail 30 postgres redis mosquitto
+  exit 1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 8 — Wait for application services"
+# ─────────────────────────────────────────────────────────────────────────────
+
+wait_healthy geedsan-chirpstack 120 || {
+  err "ChirpStack failed — last 40 log lines:"
+  docker logs geedsan-chirpstack --tail 40 2>&1
+  add_issue "ChirpStack unhealthy — review logs above"
+}
+
+wait_healthy geedsan-backend 180 || {
+  err "Backend failed — last 40 log lines:"
+  docker logs geedsan-backend --tail 40 2>&1
+  add_issue "Backend unhealthy — review logs above"
+}
+
+wait_healthy geedsan-frontend 120 || {
+  err "Frontend failed — last 30 log lines:"
+  docker logs geedsan-frontend --tail 30 2>&1
+  add_issue "Frontend unhealthy — review logs above"
+}
+
+# Odoo is allowed 5 minutes — normal on first start due to database initialisation.
+step "Waiting for Odoo (allows up to 5 min for first-start DB initialisation)..."
+if wait_healthy geedsan-odoo 300; then
+  ok "Odoo is healthy"
+else
+  ODOO_STATE=$(docker inspect --format='{{.State.Status}}' geedsan-odoo 2>/dev/null || echo "missing")
+  if [[ "$ODOO_STATE" == "running" ]]; then
+    step "Odoo is running but healthcheck has not passed yet — still initialising."
+    step "Re-check with: docker inspect --format='{{.State.Health.Status}}' geedsan-odoo"
+    add_issue "Odoo still initialising — re-check in 5 min: docker inspect geedsan-odoo"
+  else
+    err "Odoo is in state '$ODOO_STATE'"
+    docker logs geedsan-odoo --tail 30 2>&1
+    add_issue "Odoo failed to start (state: $ODOO_STATE)"
+  fi
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 9 — Verify Backend ↔ MQTT (Mosquitto)"
+# ─────────────────────────────────────────────────────────────────────────────
+
+MQTT_USER=$(docker exec geedsan-backend sh -c 'printf "%s" "$MQTT_USERNAME"' 2>/dev/null || echo "")
+MQTT_PASS=$(docker exec geedsan-backend sh -c 'printf "%s" "$MQTT_PASSWORD"'  2>/dev/null || echo "")
+
+[[ -n "$MQTT_USER" ]] \
+  && ok "Backend MQTT_USERNAME = $MQTT_USER" \
+  || { err "Backend MQTT_USERNAME is empty — check .env.production"; add_issue "MQTT_USERNAME empty in backend container"; }
+
+[[ -n "$MQTT_PASS" ]] \
+  && ok "Backend MQTT_PASSWORD is set" \
+  || { err "Backend MQTT_PASSWORD is empty — check .env.production"; add_issue "MQTT_PASSWORD empty in backend container"; }
+
+if docker logs geedsan-backend 2>&1 | grep -qi "mqtt.*connect\|connected to mqtt\|mqtt client"; then
+  ok "MQTT connection confirmed in backend logs"
+else
+  step "Checking backend logs for MQTT activity..."
+  docker logs geedsan-backend --tail 20 2>&1 | grep -i "mqtt\|mosquitto\|connect" || step "(no MQTT log lines yet — may still be connecting)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 10 — Verify ChirpStack ↔ Redis + PostgreSQL"
+# ─────────────────────────────────────────────────────────────────────────────
+
+CS_LOG=$(docker logs geedsan-chirpstack --tail 80 2>&1)
+
+if echo "$CS_LOG" | grep -qiE "error connecting|failed to connect|authentication (failed|error)|WRONGPASS"; then
+  err "ChirpStack connection errors detected:"
+  echo "$CS_LOG" | grep -iE "error|fail|auth" | head -15
+  add_issue "ChirpStack has connection errors — review docker logs geedsan-chirpstack"
+else
+  ok "No connection errors in ChirpStack logs"
+fi
+
+echo "$CS_LOG" | grep -i "redis\|postgres\|mqtt\|starting\|api server" | tail -10 || true
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 11 — Verify Odoo"
+# ─────────────────────────────────────────────────────────────────────────────
+
+ODOO_HTTP=$(docker exec geedsan-odoo curl -sf http://localhost:8069/web/health 2>/dev/null && echo "ok" || echo "not-ready")
+if [[ "$ODOO_HTTP" == "ok" ]]; then
+  ok "Odoo /web/health responds"
+else
+  step "Odoo HTTP health not yet responding (may still be initialising)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 12 — Verify Frontend → Backend (internal network)"
+# ─────────────────────────────────────────────────────────────────────────────
+
+FE_CODE=$(docker exec geedsan-frontend node -e \
+  "require('http').get('http://backend:5000/health',r=>{process.stdout.write(String(r.statusCode))}).on('error',e=>{process.stdout.write('err:'+e.code)})" \
+  2>/dev/null || echo "exec-error")
+
+if [[ "$FE_CODE" == "200" ]]; then
+  ok "Frontend → Backend: HTTP 200"
+else
+  err "Frontend → Backend: $FE_CODE"
+  add_issue "Frontend cannot reach Backend (response: $FE_CODE)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 13 — SSL Certificate and Nginx"
+# ─────────────────────────────────────────────────────────────────────────────
+
+SSL_READY=false
+
+if [[ -f "$CERT_PATH" ]]; then
+  EXPIRY=$(openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | sed 's/notAfter=//' || echo "unknown")
+  ok "SSL certificate exists — expires: $EXPIRY"
+  SSL_READY=true
+
+elif [[ -n "${CF_API_TOKEN:-}" ]]; then
+  step "CF_API_TOKEN set — checking DNS before requesting certificate..."
+  RESOLVED=$(dig +short wms.geedsan.com @1.1.1.1 2>/dev/null | tail -1 || echo "")
+  if [[ "$RESOLVED" == "$VPS_IP" ]]; then
+    ok "DNS wms.geedsan.com → $RESOLVED (correct)"
+    step "Issuing SSL certificate via Cloudflare DNS-01..."
+    if bash deploy/ssl/setup-ssl.sh; then
+      ok "SSL certificate issued successfully"
+      SSL_READY=true
+    else
+      err "SSL issuance failed — check Cloudflare token has Zone:Read + DNS:Edit permissions"
+      add_issue "SSL issuance failed — re-run with valid CF_API_TOKEN"
+    fi
+  else
+    err "DNS wms.geedsan.com → '${RESOLVED:-<no record>}' — expected $VPS_IP"
+    err "Point all four A records to $VPS_IP in Cloudflare, then re-run."
+    add_issue "DNS not pointing to VPS — update Cloudflare then re-run with CF_API_TOKEN"
+  fi
+
+else
+  step "No SSL cert found and CF_API_TOKEN is not set."
+  step "To issue SSL: sudo CF_API_TOKEN='your_token' bash deploy/scripts/final-deploy.sh"
+  add_issue "SSL not configured (run: sudo CF_API_TOKEN='your_token' bash deploy/scripts/final-deploy.sh)"
+fi
+
+# Restart nginx if SSL is now available
+NGINX_STATUS=$(docker inspect \
+  --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+  geedsan-nginx 2>/dev/null || echo "missing")
+
+if [[ "$SSL_READY" == "true" ]]; then
+  if [[ "$NGINX_STATUS" == "healthy" ]]; then
+    ok "Nginx is healthy"
+  else
+    step "Nginx status: $NGINX_STATUS — restarting now that SSL certs are available..."
+    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" restart nginx
+    sleep 20
+    NGINX_STATUS=$(docker inspect \
+      --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+      geedsan-nginx 2>/dev/null || echo "missing")
+    if [[ "$NGINX_STATUS" == "healthy" ]]; then
+      ok "Nginx is healthy after restart"
+    else
+      err "Nginx is still unhealthy after SSL restart — logs:"
+      docker logs geedsan-nginx --tail 40 2>&1
+      add_issue "Nginx unhealthy after SSL restart — see logs above"
+    fi
+  fi
+else
+  step "Nginx: $NGINX_STATUS (requires SSL certs — expected without cert)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "STEP 14 — End-to-End URL Validation"
+# ─────────────────────────────────────────────────────────────────────────────
+
+test_url() {
+  local label="$1" url="$2"
+  local code
+  code=$(curl -sk -o /dev/null -w "%{http_code}" --connect-timeout 10 "$url" 2>/dev/null || echo "000")
+  if [[ "$code" =~ ^(200|301|302|303|307|308)$ ]]; then
+    ok "$label → HTTP $code"
+  else
+    err "$label → HTTP $code (expected 2xx/3xx)"
+    add_issue "URL $label returned $code"
+  fi
+}
+
+# Internal: backend health (via container IP, always testable)
+BACKEND_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' geedsan-backend 2>/dev/null | head -1 || echo "")
+if [[ -n "$BACKEND_IP" ]]; then
+  test_url "Backend /health (internal)" "http://${BACKEND_IP}:5000/health"
+else
+  step "Could not get backend container IP"
+fi
+
+# HTTPS endpoints (only if SSL is ready)
+if [[ "$SSL_READY" == "true" ]]; then
+  test_url "https://wms.geedsan.com"          "https://wms.geedsan.com"
+  test_url "https://api.geedsan.com/health"   "https://api.geedsan.com/health"
+  test_url "https://lns.geedsan.com"          "https://lns.geedsan.com"
+  test_url "https://odoo.geedsan.com"         "https://odoo.geedsan.com"
+else
+  step "Skipping HTTPS tests — SSL/nginx not ready yet"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "DEPLOYMENT REPORT"
+# ─────────────────────────────────────────────────────────────────────────────
+
+echo ""
+echo "Running Containers:"
+echo "────────────────────────────────────────────────────────────────────"
+printf "  %-32s %-10s %s\n" "CONTAINER" "STATE" "HEALTH"
+printf "  %-32s %-10s %s\n" "---------" "-----" "------"
+while IFS= read -r cname; do
+  cstate=$(docker inspect --format='{{.State.Status}}' "$cname" 2>/dev/null || echo "?")
+  chealth=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}}' "$cname" 2>/dev/null || echo "?")
+  case "$chealth" in
+    healthy)   hfmt="${GRN}healthy${NC}" ;;
+    unhealthy) hfmt="${RED}unhealthy${NC}" ;;
+    starting)  hfmt="${YLW}starting${NC}" ;;
+    *)         hfmt="$chealth" ;;
+  esac
+  printf "  %-32s %-10s " "$cname" "$cstate"
+  echo -e "$hfmt"
+done < <(docker ps --filter "name=geedsan" --format "{{.Names}}" | sort)
+
+echo ""
+echo "Volumes (data preserved):"
+echo "────────────────────────────────────────────────────────────────────"
+docker volume ls --filter "name=geedsan" --format "  {{.Name}}" 2>/dev/null | sort
+
+echo ""
+
+if [[ ${#ISSUES[@]} -eq 0 ]]; then
+  echo -e "${GRN}━━ DEPLOYMENT COMPLETE — ALL SYSTEMS OPERATIONAL ━━${NC}"
+  echo ""
+  echo "  WMS Frontend:  https://wms.geedsan.com"
+  echo "  Backend API:   https://api.geedsan.com"
+  echo "  Odoo ERP:      https://odoo.geedsan.com"
+  echo "  ChirpStack:    https://lns.geedsan.com"
+else
+  echo -e "${YLW}━━ DEPLOYMENT COMPLETE — REMAINING TASKS ━━${NC}"
+  echo ""
+  for i in "${!ISSUES[@]}"; do
+    echo -e "  $((i+1)). ${YLW}${ISSUES[$i]}${NC}"
+  done
+fi
+
+echo ""
+echo "Post-deployment tasks (require services to be accessible):"
+echo "  1. ChirpStack API key:"
+echo "       Log in → lns.geedsan.com → API Keys → create key"
+echo "       Add: CHIRPSTACK_API_KEY=<key> to .env.production"
+echo "  2. ChirpStack Tenant ID:"
+echo "       Log in → lns.geedsan.com → Tenants → copy UUID"
+echo "       Add: CHIRPSTACK_TENANT_ID=<uuid> to .env.production"
+echo "  3. Odoo API key:"
+echo "       Log in → odoo.geedsan.com → Settings → API Keys → create"
+echo "       Add: ODOO_API_KEY=<key> to .env.production"
+echo "  4. After updating .env.production:"
+echo "       docker compose -f docker-compose.prod.yml --env-file .env.production restart backend"
+echo ""
+echo "  Commit : $(git rev-parse --short HEAD)"
+echo "  Time   : $(date '+%Y-%m-%d %H:%M:%S %Z')"
+echo ""
