@@ -12,3 +12,4 @@ logs/
 backup_pre_*.sql
 docker/certs/
 deploy/chirpstack/secrets.toml
+.deploy-state
