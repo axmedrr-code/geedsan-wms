@@ -161,11 +161,21 @@ services:
   nginx:
     image: nginx:1.27-alpine
     container_name: geedsan-nginx
+    # start.sh checks for SSL certificates at startup and copies either the
+    # HTTP-only or HTTPS conf files into /etc/nginx/active/ before nginx starts.
+    # After issuing certificates with certbot, restart this service to switch
+    # to HTTPS:  docker compose -f docker-compose.prod.yml restart nginx
+    entrypoint: ["sh", "/etc/nginx/start.sh"]
     restart: unless-stopped
     volumes:
       - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
-      # Let's Encrypt certs (populated by certbot on the host — Phase 4)
+      # Entrypoint script — selects HTTP-only or HTTPS config based on cert availability
+      - ./deploy/nginx/start.sh:/etc/nginx/start.sh:ro
+      # HTTPS conf files (used when /etc/letsencrypt certs are present and valid)
+      - ./deploy/nginx/conf.d:/etc/nginx/available-https:ro
+      # HTTP-only conf files (used when certs are absent — allows nginx to start without SSL)
+      - ./deploy/nginx/conf.d-http:/etc/nginx/available-http:ro
+      # Let's Encrypt certs (populated by certbot on the host)
       - /etc/letsencrypt:/etc/letsencrypt:ro
       # ACME HTTP-01 challenge webroot (fallback; primary is Cloudflare DNS)
       - /var/www/certbot:/var/www/certbot:ro
