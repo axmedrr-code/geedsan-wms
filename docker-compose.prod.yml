@@ -335,6 +335,7 @@ services:
 
 networks:
   geedsan-network:
+    name: geedsan_default
     driver: bridge
 
 volumes:
