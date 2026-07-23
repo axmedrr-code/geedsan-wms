@@ -4,56 +4,195 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Geedsan Enterprise Platform</title>
+<meta name="description" content="Secure access to enterprise applications.">
 <style>
-  :root { color-scheme: light dark; }
-  body {
-    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    max-width: 34rem;
-    margin: 4rem auto;
-    padding: 0 1.5rem;
-    color: #1a1a1a;
-    background: #fff;
+  :root {
+    color-scheme: light dark;
+    --ink: #101826;
+    --ink-soft: #5b6577;
+    --ink-faint: #8992a3;
+    --paper: #f5f8fc;
+    --surface: #ffffff;
+    --line: #e1e6ef;
+    --accent: #0a5cc9;
+    --accent-tint: #eaf2fd;
+    --shadow-color: 220 30% 15%;
   }
-  h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
-  p.lead { color: #555; margin: 0 0 2rem; }
-  .services { display: flex; flex-direction: column; gap: 0.75rem; list-style: none; padding: 0; margin: 0; }
-  .service {
-    display: block;
-    padding: 0.9rem 1.1rem;
-    border: 1px solid #d8d8d8;
-    border-radius: 8px;
-    text-decoration: none;
-    color: #1a1a1a;
-    transition: border-color 0.15s ease, background 0.15s ease;
-  }
-  .service:hover { border-color: #999; background: #fafafa; }
-  .service strong { display: block; font-size: 1rem; }
-  .service span { display: block; font-size: 0.85rem; color: #666; margin-top: 0.15rem; }
   @media (prefers-color-scheme: dark) {
-    body { background: #12141a; color: #e8e8e8; }
-    p.lead { color: #a0a0a8; }
-    .service { border-color: #33363f; color: #e8e8e8; }
-    .service:hover { border-color: #55585f; background: #1a1d24; }
-    .service span { color: #9a9da5; }
+    :root {
+      --ink: #eef1f6;
+      --ink-soft: #a6adba;
+      --ink-faint: #767d8a;
+      --paper: #0a0e16;
+      --surface: #141a24;
+      --line: #262d3a;
+      --accent: #5b9df5;
+      --accent-tint: #16233a;
+      --shadow-color: 220 40% 2%;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #eef1f6; --ink-soft: #a6adba; --ink-faint: #767d8a;
+    --paper: #0a0e16; --surface: #141a24; --line: #262d3a;
+    --accent: #5b9df5; --accent-tint: #16233a; --shadow-color: 220 40% 2%;
+  }
+  :root[data-theme="light"] {
+    --ink: #101826; --ink-soft: #5b6577; --ink-faint: #8992a3;
+    --paper: #f5f8fc; --surface: #ffffff; --line: #e1e6ef;
+    --accent: #0a5cc9; --accent-tint: #eaf2fd; --shadow-color: 220 30% 15%;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--ink);
+    background: var(--paper);
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+    max-width: 42rem;
+    margin: 0 auto;
+    padding: 4.5rem 1.5rem 2.5rem;
+  }
+  header { text-align: center; margin-bottom: 3rem; }
+  .mark { width: 44px; height: 44px; margin: 0 auto 1.25rem; display: block; }
+  h1 {
+    font-size: 1.625rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+    margin: 0 0 0.4rem;
+    color: var(--ink);
+  }
+  .subtitle {
+    font-size: 1rem;
+    color: var(--ink-soft);
+    margin: 0;
+  }
+  .services {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 1rem;
+    list-style: none;
+    padding: 0;
+    margin: 0 0 3rem;
+  }
+  .card {
+    position: relative;
+    height: 100%;
+    padding: 1.5rem 1.35rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: 0 1px 2px hsl(var(--shadow-color) / 0.04), 0 1px 6px hsl(var(--shadow-color) / 0.05);
+    transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+  }
+  .card:hover, .card:focus-within {
+    transform: translateY(-2px);
+    border-color: var(--accent);
+    box-shadow: 0 4px 8px hsl(var(--shadow-color) / 0.06), 0 12px 24px hsl(var(--shadow-color) / 0.10);
+  }
+  .card .icon {
+    width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.25rem;
+    background: var(--accent-tint);
+    border-radius: 10px;
+    margin-bottom: 1rem;
+  }
+  .card h2 {
+    font-size: 1.0625rem;
+    font-weight: 600;
+    margin: 0 0 0.3rem;
+    color: var(--ink);
+  }
+  .card p {
+    font-size: 0.875rem;
+    color: var(--ink-soft);
+    margin: 0 0 1.1rem;
+  }
+  /* "Open" is the card's real link; ::after stretches its hit area to cover
+     the whole card (nearest positioned ancestor), so the card reads and
+     behaves as fully clickable without nesting an <a> inside an <a>. */
+  .open-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-decoration: none;
+    padding: 0.4rem 0.7rem;
+    border-radius: 8px;
+    background: var(--accent-tint);
+    transition: background 0.16s ease, color 0.16s ease;
+  }
+  .open-btn::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+  .card:hover .open-btn, .open-btn:hover, .open-btn:focus-visible {
+    background: var(--accent);
+    color: var(--surface);
+  }
+  .open-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  footer {
+    margin-top: auto;
+    padding-top: 1.75rem;
+    border-top: 1px solid var(--line);
+    text-align: center;
+    font-size: 0.8125rem;
+    color: var(--ink-faint);
+  }
+  footer p { margin: 0.2rem 0; }
+  @media (max-width: 420px) {
+    .page { padding: 3rem 1.25rem 2rem; }
+    h1 { font-size: 1.375rem; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .card { transition: none; }
   }
 </style>
 </head>
 <body>
-  <h1>Geedsan Enterprise Platform</h1>
-  <p class="lead">Welcome to Geedsan Enterprise Platform. Please select a service.</p>
-  <ul class="services">
-    <li><a class="service" href="https://wms.geedsan.com">
-      <strong>WMS</strong>
-      <span>Warehouse Management System</span>
-    </a></li>
-    <li><a class="service" href="https://erp.geedsan.com">
-      <strong>ERP</strong>
-      <span>Odoo Enterprise Resource Planning</span>
-    </a></li>
-    <li><a class="service" href="https://api.geedsan.com/health">
-      <strong>API</strong>
-      <span>Backend API status</span>
-    </a></li>
-  </ul>
+  <div class="page">
+    <header>
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true" style="color:var(--accent)">
+        <path fill="currentColor" d="M20 3C20 3 7 18.7 7 27.2a13 13 0 0 0 26 0C33 18.7 20 3 20 3Z"/>
+        <path d="M13.5 26.3a6.5 6.5 0 0 0 6 6.4" fill="none" stroke="#ffffff" stroke-opacity=".55" stroke-width="2.2" stroke-linecap="round"/>
+      </svg>
+      <h1>Geedsan Enterprise Platform</h1>
+      <p class="subtitle">Secure access to enterprise applications.</p>
+    </header>
+
+    <ul class="services">
+      <li class="card">
+        <span class="icon" aria-hidden="true">📦</span>
+        <h2>WMS</h2>
+        <p>Warehouse Management System</p>
+        <a class="open-btn" href="https://wms.geedsan.com">Open <span aria-hidden="true">→</span></a>
+      </li>
+      <li class="card">
+        <span class="icon" aria-hidden="true">🏢</span>
+        <h2>ERP</h2>
+        <p>Enterprise Resource Planning</p>
+        <a class="open-btn" href="https://erp.geedsan.com">Open <span aria-hidden="true">→</span></a>
+      </li>
+      <li class="card">
+        <span class="icon" aria-hidden="true">🔌</span>
+        <h2>API</h2>
+        <p>Backend API Services</p>
+        <a class="open-btn" href="https://api.geedsan.com/health">Open <span aria-hidden="true">→</span></a>
+      </li>
+    </ul>
+
+    <footer>
+      <p>© 2026 Geedsan Enterprise Platform</p>
+      <p>Powered by Alnaciim Water Company</p>
+    </footer>
+  </div>
 </body>
 </html>
