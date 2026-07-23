@@ -1,17 +1,18 @@
 ================================================================
  NUWACO WMS POST-REBOOT VERIFICATION REPORT
- Generated: 07/18/2026 13:14:22
+ Generated: 07/23/2026 11:20:45
 ================================================================
 
 
 --- BOOT TIMESTAMPS ---
 Last Windows boot : 07/18/2026 12:36:29
+Verification start: 07/23/2026 11:20:45
 Running as user   : pc on DESKTOP-DA8FJ35
 
 --- TASK SCHEDULER — WMS AUTO-START ---
 Waiting for 'NUWACO WMS Auto-Start' task to complete (max 5 min)...
 Task state       : Ready
-Last run time    : 07/18/2026 12:36:47
+Last run time    : 07/23/2026 11:19:13
 Last result code : 1  (FAILURE)
 
 --- DOCKER ENGINE ---
@@ -20,98 +21,77 @@ Server Version: 29.5.3
 Operating System: Docker Desktop
 
 --- CONTAINER STARTUP WAIT ---
-Wait time: 15s
+Wait time: 45s
 
 --- DOCKER COMPOSE PS ---
-NAME                 IMAGE                     COMMAND                  SERVICE      CREATED          STATUS                    PORTS
-geedsan-backend      geedsan-backend           "docker-entrypoint.s…"   backend      3 minutes ago    Up 2 minutes (healthy)    0.0.0.0:5000->5000/tcp, [::]:5000->5000/tcp
-geedsan-chirpstack   chirpstack/chirpstack:4   "/usr/bin/chirpstack…"   chirpstack   23 minutes ago   Up 23 minutes (healthy)   
-geedsan-frontend     geedsan-frontend          "docker-entrypoint.s…"   frontend     23 minutes ago   Up 23 minutes (healthy)   0.0.0.0:3000->3000/tcp, [::]:3000->3000/tcp
-geedsan-mosquitto    eclipse-mosquitto:2       "/docker-entrypoint.…"   mosquitto    23 minutes ago   Up 23 minutes (healthy)   0.0.0.0:1883->1883/tcp, [::]:1883->1883/tcp
-geedsan-nginx        nginx:1.27-alpine         "/docker-entrypoint.…"   nginx        23 minutes ago   Up 22 minutes (healthy)   0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:443->443/tcp, [::]:443->443/tcp
-geedsan-odoo         odoo:18.0                 "/entrypoint.sh odoo…"   odoo         23 minutes ago   Up 23 minutes             0.0.0.0:8069->8069/tcp, [::]:8069->8069/tcp
-geedsan-postgres     postgres:16-alpine        "docker-entrypoint.s…"   postgres     23 minutes ago   Up 23 minutes (healthy)   0.0.0.0:8080->8080/tcp, [::]:8080->8080/tcp, 0.0.0.0:5433->5432/tcp, [::]:5433->5432/tcp
-geedsan-redis        redis:7-alpine            "docker-entrypoint.s…"   redis        23 minutes ago   Up 23 minutes (healthy)   6379/tcp
+NAME      IMAGE     COMMAND   SERVICE   CREATED   STATUS    PORTS
 
 --- CONTAINER HEALTH STATUS ---
-  [PASS] geedsan-postgres : running/healthy
-  [PASS] geedsan-redis : running/healthy
-  [PASS] geedsan-mosquitto : running/healthy
-  [PASS] geedsan-backend : running/healthy
-  [PASS] geedsan-frontend : running/healthy
-  [PASS] geedsan-nginx : running/healthy
-  [PASS] geedsan-odoo : running/no-healthcheck
-  [PASS] geedsan-chirpstack : running/healthy
+  [FAIL] geedsan-postgres :  error: no such object: geedsan-postgres
+  [FAIL] geedsan-redis :  error: no such object: geedsan-redis
+  [FAIL] geedsan-mosquitto :  error: no such object: geedsan-mosquitto
+  [FAIL] geedsan-backend :  template parsing error: template: :1:8: executing "" at <.State.Status>: map has no entry for key "State"
+  [FAIL] geedsan-frontend : running/unhealthy
+  [FAIL] geedsan-nginx :  error: no such object: geedsan-nginx
+  [FAIL] geedsan-odoo :  error: no such object: geedsan-odoo
+  [FAIL] geedsan-chirpstack :  error: no such object: geedsan-chirpstack
 
 --- HTTP HEALTH ENDPOINTS ---
-  [PASS] WMS Backend API: HTTP 200
+  [FAIL] WMS Backend API: Unable to connect to the remote server
   [PASS] WMS Frontend: HTTP 307
-  [PASS] Nginx proxy: HTTP 200
-  [PASS] Odoo: HTTP 200
-  [PASS] ChirpStack: HTTP 200
+  [FAIL] Nginx proxy: Unable to connect to the remote server
+  [FAIL] Odoo: Unable to connect to the remote server
+  [FAIL] ChirpStack: Unable to connect to the remote server
 
 --- WMS AUTH TEST ---
-  [PASS] WMS Auth: temp-user login succeeded — JWT issued (auth pipeline OK)
+  [FAIL] WMS Auth: Method invocation failed because [System.Management.Automation.ErrorRecord] does not contain a method named 'Trim'.
 
 --- WMS PAYMENT API ---
-  [PASS] Payment API responded (records=6)
+  [SKIP] Auth failed — skipping payment test
   Temp user removed
 
 --- ODOO DASHBOARD TEST ---
-  Odoo auth: uid=2
-  [PASS] Invoicing Dashboard: loaded OK (no crash)
+  [FAIL] Odoo: Method invocation failed because [System.Management.Automation.ErrorRecord] does not contain a method named 'Trim'.
 
 --- MQTT CONNECTIVITY ---
-  [PASS] MQTT messages found in backend log:
-    [2026-07-18 10:11:51] [32minfo[39m: ✅ MQTT connected to mqtt://mosquitto:1883
-    [2026-07-18 10:11:51] [32minfo[39m: 📡 Subscribed to LoRaWAN topics: application/+/device/+/event/up, application/+/device/+/event/join, application/+/device/+/event/status
+  [FAIL] No MQTT log entries found in backend (checked full log)
 
 --- ODOO SYNC QUEUE ---
-    status   | count 
-   failed    |     2
-   completed |     7
-  (2 rows)
-  
+  Error response from daemon: No such container: geedsan-postgres
 
 --- NETWORK IP ASSIGNMENTS ---
-  [PASS] geedsan-redis: 172.28.0.11/16
-  [PASS] geedsan-odoo: 172.28.0.6/16
-  [PASS] geedsan-nginx: 172.28.0.12/16
-  [PASS] geedsan-backend: 172.28.0.4/16
-  [PASS] geedsan-frontend: 172.28.0.5/16
-  [PASS] geedsan-mosquitto: 172.28.0.10/16
-  [PASS] geedsan-postgres: 172.28.0.2/16
+  [PASS] geedsan-frontend: 172.19.0.6/16
 
 --- WMS AUTO-START LOG (last 25 lines) ---
-  [2026-07-18 12:29:19]   compose:  Container geedsan-frontend Started 
-  [2026-07-18 12:29:19]   compose:  Container geedsan-backend Waiting 
-  [2026-07-18 12:29:19]   compose:  Container geedsan-frontend Waiting 
-  [2026-07-18 12:29:19]   compose:  Container geedsan-backend Healthy 
-  [2026-07-18 12:29:19]   compose:  Container geedsan-frontend Healthy 
-  [2026-07-18 12:29:19]   compose:  Container geedsan-nginx Starting 
-  [2026-07-18 12:29:19]   compose:  Container geedsan-nginx Started 
-  [2026-07-18 12:29:19] docker compose up -d completed successfully
-  [2026-07-18 12:29:19] Waiting for all container healthchecks...
-  [2026-07-18 12:29:19]   Still starting: geedsan-nginx
-  [2026-07-18 12:29:29] All containers healthy after 10s
-  [2026-07-18 12:29:29] WMS auto-start complete
-  [2026-07-18 12:36:56] WMS auto-start triggered (Task Scheduler at logon)
-  [2026-07-18 12:36:56] Waiting for Docker Engine (timeout=300s)...
-  [2026-07-18 12:37:38] Docker Engine ready after 10s
-  [2026-07-18 12:37:38] Running: docker compose up -d
-  [2026-07-18 12:37:41]   compose:  Container geedsan-redis Running 
-  [2026-07-18 12:37:41]   compose:  Container geedsan-mosquitto Running 
-  [2026-07-18 12:37:41]   compose:  Container geedsan-odoo Running 
-  [2026-07-18 12:37:41]   compose:  Container geedsan-backend Running 
-  [2026-07-18 12:37:41]   compose:  Container geedsan-frontend Running 
-  [2026-07-18 12:37:41]   compose:  Container geedsan-nginx Running 
-  [2026-07-18 12:37:41]   compose:  Container geedsan-postgres Starting 
-  [2026-07-18 12:37:41]   compose: Error response from daemon: failed to set up container networking: Address already in use
-  [2026-07-18 12:37:41] ERROR: docker compose up -d exited with code 1
+  [2026-07-23 11:20:40]   down:  Container geedsan-redis Stopping 
+  [2026-07-23 11:20:40]   down:  Container geedsan-odoo Stopped 
+  [2026-07-23 11:20:40]   down:  Container geedsan-odoo Removing 
+  [2026-07-23 11:20:40]   down:  Container geedsan-redis Stopped 
+  [2026-07-23 11:20:40]   down:  Container geedsan-redis Removing 
+  [2026-07-23 11:20:40]   down:  Container geedsan-odoo Removed 
+  [2026-07-23 11:20:40]   down:  Container geedsan-redis Removed 
+  [2026-07-23 11:20:40]   down:  Container geedsan-backend Stopped 
+  [2026-07-23 11:20:40]   down:  Container geedsan-backend Removing 
+  [2026-07-23 11:20:40]   down:  Container geedsan-backend Removed 
+  [2026-07-23 11:20:40]   down:  Container geedsan-mosquitto Stopping 
+  [2026-07-23 11:20:40]   down:  Container geedsan-postgres Stopping 
+  [2026-07-23 11:20:40]   down:  Container geedsan-mosquitto Stopped 
+  [2026-07-23 11:20:40]   down:  Container geedsan-mosquitto Removing 
+  [2026-07-23 11:20:40]   down:  Container geedsan-mosquitto Removed 
+  [2026-07-23 11:20:40]   down:  Container geedsan-postgres Stopped 
+  [2026-07-23 11:20:40]   down:  Container geedsan-postgres Removing 
+  [2026-07-23 11:20:40]   down:  Container geedsan-postgres Removed 
+  [2026-07-23 11:20:40]   down:  Network geedsan_geedsan-network Removing 
+  [2026-07-23 11:20:40]   down:  Network geedsan_geedsan-network Resource is still in use 
+  [2026-07-23 11:20:40] Teardown complete — starting fresh
+  [2026-07-23 11:20:40] Running: docker compose up -d
+  [2026-07-23 11:20:40]   compose:  Network geedsan_geedsan-network Removed 
+  [2026-07-23 11:20:40]   compose: Error response from daemon: error while removing network: network geedsan_geedsan-network has active endpoints (name:"geedsan-frontend" id:"91c352a44c56")
+  [2026-07-23 11:20:40] ERROR: docker compose up -d exited with code 1
 
 --- FINAL VERDICT ---
 
-Verification completed in: 31s
-PASS: 24   FAIL: 0
+Verification completed in: 77s
+PASS: 2   FAIL: 15
 
-OVERALL RESULT: *** PASS *** — All services started automatically after reboot
+OVERALL RESULT: *** FAIL *** — 15 check(s) failed (see [FAIL] lines above)
