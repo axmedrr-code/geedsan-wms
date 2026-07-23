@@ -257,18 +257,22 @@ hdr "STEP 5 — Selective Image Build"
 APP_VER="${APP_VERSION:-latest}"
 BACKEND_IMAGE="nuwaco-backend:${APP_VER}"
 FRONTEND_IMAGE="nuwaco-frontend:${APP_VER}"
+NGINX_IMAGE="nuwaco-nginx:${APP_VER}"
 
 # Git hash of the last commit that touched each service's source directory
-BACKEND_SRC_HASH=$(git log -1 --format="%H" -- backend/  2>/dev/null || echo "none")
-FRONTEND_SRC_HASH=$(git log -1 --format="%H" -- frontend/ 2>/dev/null || echo "none")
+BACKEND_SRC_HASH=$(git log -1 --format="%H" -- backend/     2>/dev/null || echo "none")
+FRONTEND_SRC_HASH=$(git log -1 --format="%H" -- frontend/    2>/dev/null || echo "none")
+NGINX_SRC_HASH=$(git log -1 --format="%H" -- deploy/nginx/   2>/dev/null || echo "none")
 
 LAST_BACKEND_HASH=$(state_val "BACKEND_HASH")
 LAST_FRONTEND_HASH=$(state_val "FRONTEND_HASH")
+LAST_NGINX_HASH=$(state_val "NGINX_HASH")
 LAST_API_URL=$(state_val "FRONTEND_API_URL")
 CURRENT_API_URL="${API_URL:-}"
 
 BUILD_BACKEND=false
 BUILD_FRONTEND=false
+BUILD_NGINX=false
 
 # Backend
 if ! docker image inspect "$BACKEND_IMAGE" &>/dev/null 2>&1; then
@@ -301,6 +305,19 @@ else
     ok "Frontend image '$FRONTEND_IMAGE' is current — skipping build"
 fi
 
+# Nginx (contains openssl, required by start.sh's cert-validity check)
+if ! docker image inspect "$NGINX_IMAGE" &>/dev/null 2>&1; then
+    info "Nginx image '$NGINX_IMAGE' not found — build required"
+    BUILD_NGINX=true
+elif [[ "$NGINX_SRC_HASH" != "$LAST_NGINX_HASH" ]]; then
+    info "Nginx source changed since last build"
+    dim "Previous: ${LAST_NGINX_HASH:-<never built>}"
+    dim "Current:  $NGINX_SRC_HASH"
+    BUILD_NGINX=true
+else
+    ok "Nginx image '$NGINX_IMAGE' is current — skipping build"
+fi
+
 if [[ "$BUILD_BACKEND" == "true" ]]; then
     info "Building backend..."
     if docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build backend; then
@@ -321,6 +338,16 @@ if [[ "$BUILD_FRONTEND" == "true" ]]; then
     fi
 fi
 
+if [[ "$BUILD_NGINX" == "true" ]]; then
+    info "Building nginx..."
+    if docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build nginx; then
+        ok "Nginx built: $NGINX_IMAGE"
+    else
+        fail "Nginx build failed — aborting to prevent stale image deployment"
+        exit 1
+    fi
+fi
+
 # =============================================================================
 hdr "STEP 6 — Start Services"
 # =============================================================================
@@ -335,6 +362,7 @@ if docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d; then
     {
         echo "BACKEND_HASH=${BACKEND_SRC_HASH}"
         echo "FRONTEND_HASH=${FRONTEND_SRC_HASH}"
+        echo "NGINX_HASH=${NGINX_SRC_HASH}"
         echo "FRONTEND_API_URL=${CURRENT_API_URL}"
         echo "DEPLOYED_COMMIT=${CURRENT_COMMIT}"
         echo "DEPLOYED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')"

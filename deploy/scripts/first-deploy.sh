@@ -68,8 +68,8 @@ $COMPOSE pull postgres redis mosquitto odoo chirpstack
 ok "Images pulled"
 
 # ── 4. Build application images ───────────────────────────────────────────────
-step "Building application images (backend + frontend)"
-$COMPOSE build --no-cache backend frontend
+step "Building application images (backend + frontend + nginx)"
+$COMPOSE build --no-cache backend frontend nginx
 ok "Application images built"
 
 # ── 5. Start infrastructure layer (postgres, redis, mosquitto) ────────────────

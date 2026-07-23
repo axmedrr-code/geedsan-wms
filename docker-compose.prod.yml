@@ -163,7 +163,10 @@ services:
 
   # ── Nginx reverse proxy ─────────────────────────────────────────────────────
   nginx:
-    image: nginx:1.27-alpine
+    build:
+      context: ./deploy/nginx
+      dockerfile: Dockerfile
+    image: nuwaco-nginx:${APP_VERSION:-latest}
     container_name: geedsan-nginx
     # start.sh checks for SSL certificates at startup and copies either the
     # HTTP-only or HTTPS conf files into /etc/nginx/active/ before nginx starts.
@@ -171,6 +174,12 @@ services:
     # to HTTPS:  docker compose -f docker-compose.prod.yml restart nginx
     entrypoint: ["sh", "/etc/nginx/start.sh"]
     restart: unless-stopped
+    environment:
+      # Optional. Unset -> geedsan.com/www.geedsan.com serve the static
+      # landing page in deploy/nginx/landing/. Set to a hostname (e.g.
+      # wms.geedsan.com) -> 301 redirect there instead. Changing this
+      # requires `up -d` (recreate), not just `restart` — see start.sh.
+      WEBSITE_TARGET: ${WEBSITE_TARGET:-}
     volumes:
       - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       # Entrypoint script — selects HTTP-only or HTTPS config based on cert availability
@@ -179,6 +188,9 @@ services:
       - ./deploy/nginx/conf.d:/etc/nginx/available-https:ro
       # HTTP-only conf files (used when certs are absent — allows nginx to start without SSL)
       - ./deploy/nginx/conf.d-http:/etc/nginx/available-http:ro
+      # Static landing page served at geedsan.com/www.geedsan.com when
+      # WEBSITE_TARGET is not set (see start.sh)
+      - ./deploy/nginx/landing:/usr/share/nginx/html/landing:ro
       # Let's Encrypt certs (populated by certbot on the host)
       - /etc/letsencrypt:/etc/letsencrypt:ro
       # ACME HTTP-01 challenge webroot (fallback; primary is Cloudflare DNS)

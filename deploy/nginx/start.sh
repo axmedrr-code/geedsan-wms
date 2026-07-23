@@ -13,8 +13,14 @@ set -e
 
 CERT="/etc/letsencrypt/live/geedsan-wms/fullchain.pem"
 ACTIVE_DIR="/etc/nginx/active"
+# Deliberately NOT inside ACTIVE_DIR: nginx.conf wildcard-includes
+# /etc/nginx/active/*.conf at the http{} level, so a generated snippet
+# containing a `location` block placed there would get parsed twice — once
+# correctly via root.conf's explicit `include` inside its server{} block,
+# and once incorrectly at the http{} level where `location` isn't valid.
+GENERATED_DIR="/etc/nginx/generated"
 
-mkdir -p "$ACTIVE_DIR"
+mkdir -p "$ACTIVE_DIR" "$GENERATED_DIR"
 
 # Determine mode
 if [ -f "$CERT" ] && openssl x509 -checkend 86400 -noout -in "$CERT" 2>/dev/null; then
@@ -39,6 +45,35 @@ if [ "$MODE" = "https" ]; then
 else
     cp /etc/nginx/available-http/*.conf "$ACTIVE_DIR/"
     echo "[nginx-start] Loaded HTTP-only configuration ($(ls "$ACTIVE_DIR"/*.conf | wc -l) server blocks)"
+fi
+
+# geedsan.com / www.geedsan.com root location — regenerated on every start so
+# changing WEBSITE_TARGET in .env.production takes effect on container
+# recreate (up -d), not just restart (restart reuses the env baked in at
+# container creation — see docker-compose.prod.yml's nginx `environment:`).
+# $scheme in the generated redirect matches whichever mode is actually
+# active (http in HTTP-only mode, https in HTTPS mode) without needing
+# separate logic per mode.
+if [ -n "${WEBSITE_TARGET:-}" ]; then
+    # 302 (temporary), not 301: this target is a testing-phase arrangement,
+    # not a permanent commitment — the production domain will be nuwaco.com.
+    # A 301 here risks browsers/caches memorizing geedsan.com -> wms.geedsan.com
+    # long after that mapping stops being true.
+    cat > "$GENERATED_DIR/root-website.conf" <<EOF
+    location / {
+        return 302 \$scheme://${WEBSITE_TARGET}\$request_uri;
+    }
+EOF
+    echo "[nginx-start] geedsan.com root -> 302 redirecting to \$scheme://${WEBSITE_TARGET}"
+else
+    cat > "$GENERATED_DIR/root-website.conf" <<'EOF'
+    location / {
+        root /usr/share/nginx/html/landing;
+        index index.html;
+        try_files $uri $uri/ /index.html =404;
+    }
+EOF
+    echo "[nginx-start] geedsan.com root -> serving static landing page (WEBSITE_TARGET not set)"
 fi
 
 # Validate before starting
