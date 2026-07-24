@@ -277,18 +277,18 @@ const syncInvoiceToOdoo = async (invoiceId, { _query = query, _odoo = odoo, _syn
 // WMS payment method → Odoo journal type mapping
 const WMS_METHOD_TO_JOURNAL = { cash: 'cash', pos: 'cash', sahal: 'cash', evc: 'cash', other: 'cash', bank: 'bank', cheque: 'bank', adjustment: 'bank' };
 
-const syncPaymentToOdoo = async (paymentId) => {
-  const paymentR = await query('SELECT * FROM invoice_payments WHERE id=$1', [paymentId]);
+const syncPaymentToOdoo = async (paymentId, { _query = query, _odoo = odoo } = {}) => {
+  const paymentR = await _query('SELECT * FROM invoice_payments WHERE id=$1', [paymentId]);
   const payment = paymentR.rows[0];
   if (!payment) throw new Error('Payment not found');
   if (payment.odoo_id) return { paymentId, odooId: parseInt(payment.odoo_id, 10), skipped: 'already synced' };
 
-  const invoiceR = await query('SELECT * FROM invoices WHERE id=$1', [payment.invoice_id]);
+  const invoiceR = await _query('SELECT * FROM invoices WHERE id=$1', [payment.invoice_id]);
   const invoice = invoiceR.rows[0];
   if (!invoice) throw new Error('Invoice not found for payment');
-  if (!invoice.odoo_id) await syncInvoiceToOdoo(invoice.id);
+  if (!invoice.odoo_id) await syncInvoiceToOdoo(invoice.id, { _query, _odoo });
 
-  const refreshedR = await query('SELECT odoo_id FROM invoices WHERE id=$1', [invoice.id]);
+  const refreshedR = await _query('SELECT odoo_id FROM invoices WHERE id=$1', [invoice.id]);
   const odooMoveId = parseInt(refreshedR.rows[0]?.odoo_id, 10);
   if (!odooMoveId) throw new Error('Invoice not in Odoo after sync');
 
@@ -298,17 +298,18 @@ const syncPaymentToOdoo = async (paymentId) => {
     : (payment.note || `WMS Payment for ${invoice.invoice_number}`);
 
   const result = await registerPaymentOnOdooMove(odooMoveId, {
-    _query: query,
-    _odoo:  odoo,
+    _query: _query,
+    _odoo:  _odoo,
     amount: Number(payment.amount),
     journalType: jType,
     memo,
+    paymentId,
   });
 
   const paymentOdooId = result.odooPaymentId;
   if (!paymentOdooId) throw new Error('Odoo payment wizard did not return a payment ID (invoice may already be fully paid)');
 
-  await query('UPDATE invoice_payments SET odoo_id=$1 WHERE id=$2', [String(paymentOdooId), paymentId]);
+  await _query('UPDATE invoice_payments SET odoo_id=$1 WHERE id=$2', [String(paymentOdooId), paymentId]);
   return { paymentId, odooId: paymentOdooId, odooMoveId, paymentStateAfter: result.paymentStateAfter };
 };
 
@@ -584,13 +585,33 @@ const syncInvoiceFromReadingToOdoo = async (readingId, { _query = query, _odoo =
   return { readingId: Number(readingId), odooInvoiceId: moveId, branch, partnerId: customerSync.odooId, consumption, tariffType, unitPrice, amount, payload };
 };
 
+// Looks up the Odoo payment reconciled against a given move. Shared by both
+// the already-paid fast path and the post-registration lookup below (BUG-018
+// fix) — previously only the post-registration path performed this lookup, so
+// a retry landing on the fast path could never recover the payment ID and
+// invoice_payments.odoo_id was left permanently unset even though the payment
+// had already succeeded in Odoo. Never throws — a lookup failure is logged
+// and treated as "not found" so callers degrade exactly as before this fix.
+const findReconciledOdooPaymentId = async (moveIdNum, _odoo, { paymentId = null, reason = null } = {}) => {
+  try {
+    const payments = await _odoo.execute('account.payment', 'search_read',
+      [[['reconciled_invoice_ids', 'in', [moveIdNum]]]],
+      { fields: ['id', 'name', 'amount', 'date', 'state'], order: 'id desc', limit: 1 }
+    );
+    return payments.length ? payments[0].id : null;
+  } catch (err) {
+    logger.warn('[ODOO_PAYMENT_LOOKUP_FAILED] Odoo payment lookup failed', { paymentId, odooMoveId: moveIdNum, reason: reason || err.message });
+    return null;
+  }
+};
+
 // Registers a payment against a posted Odoo account.move (invoice).
 // Takes the Odoo move ID (integer). Pays the full residual unless `amount` is
 // provided in deps (for partial payment). Uses account.payment.register wizard
 // so reconciliation is handled automatically by Odoo.
 // Idempotency: if invoice is already fully paid, returns early without touching Odoo.
 // All payment attempts are logged to odoo_payment_log for audit and re-lookup.
-const registerPaymentOnOdooMove = async (odooMoveId, { _query = query, _odoo = odoo, amount = null, journalType = null, memo = null } = {}) => {
+const registerPaymentOnOdooMove = async (odooMoveId, { _query = query, _odoo = odoo, amount = null, journalType = null, memo = null, paymentId = null } = {}) => {
   const moveIdNum = Number(odooMoveId);
   if (!moveIdNum || isNaN(moveIdNum)) throw new Error('Invalid Odoo move ID');
 
@@ -602,16 +623,22 @@ const registerPaymentOnOdooMove = async (odooMoveId, { _query = query, _odoo = o
   const move = moves[0];
   if (move.state !== 'posted') throw new Error(`Invoice ${moveIdNum} has state "${move.state}" — only posted invoices can be paid`);
 
-  // 2. Idempotency fast path: invoice already fully paid
-  if (move.payment_state === 'paid') return {
-    odooMoveId:     moveIdNum,
-    invoiceName:    move.name,
-    paymentStateBefore: move.payment_state,
-    paymentStateAfter:  move.payment_state,
-    amountTotal:    Number(move.amount_total),
-    amountResidual: Number(move.amount_residual),
-    status:         'already_paid',
-  };
+  // 2. Idempotency fast path: invoice already fully paid. Still looks up the
+  // reconciled payment ID so a retry landing here can complete the WMS-side
+  // write-back instead of throwing forever (BUG-018).
+  if (move.payment_state === 'paid') {
+    const odooPaymentId = await findReconciledOdooPaymentId(moveIdNum, _odoo, { paymentId, reason: 'already_paid fast-path' });
+    return {
+      odooMoveId:     moveIdNum,
+      odooPaymentId,
+      invoiceName:    move.name,
+      paymentStateBefore: move.payment_state,
+      paymentStateAfter:  move.payment_state,
+      amountTotal:    Number(move.amount_total),
+      amountResidual: Number(move.amount_residual),
+      status:         'already_paid',
+    };
+  }
 
   // 3. Journal: caller-specified type preferred, then bank, then cash
   const preferredType = journalType || 'bank';
@@ -659,14 +686,7 @@ const registerPaymentOnOdooMove = async (odooMoveId, { _query = query, _odoo = o
   const updatedMove = updated[0];
 
   // 7. Find the Odoo payment ID (reconciled with this invoice)
-  let odooPaymentId = null;
-  try {
-    const payments = await _odoo.execute('account.payment', 'search_read',
-      [[['reconciled_invoice_ids', 'in', [moveIdNum]]]],
-      { fields: ['id', 'name', 'amount', 'date', 'state'], order: 'id desc', limit: 1 }
-    );
-    if (payments.length) odooPaymentId = payments[0].id;
-  } catch (_) {}
+  const odooPaymentId = await findReconciledOdooPaymentId(moveIdNum, _odoo, { paymentId, reason: 'post-payment lookup' });
 
   // 8. Log to DB
   await _query(

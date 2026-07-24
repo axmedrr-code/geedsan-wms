@@ -1,7 +1,7 @@
 'use strict';
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { registerPaymentOnOdooMove } = require('../src/services/odooService');
+const { registerPaymentOnOdooMove, syncPaymentToOdoo } = require('../src/services/odooService');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -300,5 +300,104 @@ describe('registerPaymentOnOdooMove', () => {
       assert.notEqual(caught.message, 'Invalid Odoo entity type',
         '"register-payment" must pass the validTypes guard');
     }
+  });
+});
+
+// ── BUG-018 fix verification ──────────────────────────────────────────────────
+// Proves the specific failure this bug described: a payment whose Odoo-side
+// registration already succeeded (move shows payment_state='paid') but whose
+// WMS-side write-back never completed must now recover on retry instead of
+// throwing forever.
+describe('BUG-018 fix — recovering odooPaymentId on the already-paid path', () => {
+
+  // Stateful mock DB for syncPaymentToOdoo: tracks invoice_payments.odoo_id
+  // across calls so a simulated retry can be checked for real idempotency.
+  const makeStatefulQuery = ({ paymentRow, invoiceRow }) => {
+    let currentPayment = { ...paymentRow };
+    const updates = [];
+    const q = async (sql, params) => {
+      if (/SELECT \* FROM invoice_payments WHERE id=\$1/.test(sql)) return { rows: [currentPayment] };
+      if (/SELECT \* FROM invoices WHERE id=\$1/.test(sql))        return { rows: [invoiceRow] };
+      if (/SELECT odoo_id FROM invoices WHERE id=\$1/.test(sql))   return { rows: [{ odoo_id: invoiceRow.odoo_id }] };
+      if (/UPDATE invoice_payments SET odoo_id=\$1/.test(sql)) {
+        updates.push(params);
+        currentPayment = { ...currentPayment, odoo_id: params[0] };
+        return { rows: [] };
+      }
+      if (/INSERT INTO odoo_payment_log/.test(sql)) return { rows: [{ id: 1 }] };
+      return { rows: [] };
+    };
+    q.updates = updates;
+    return q;
+  };
+
+  test('payment_state=paid + search_read finds a payment => registerPaymentOnOdooMove returns odooPaymentId', async () => {
+    const mock = makeOdoo({
+      'account.move.read':         () => [{ ...baseMove, payment_state: 'paid', amount_residual: 0 }],
+      'account.payment.search_read': () => [basePayment],
+    });
+    const result = await registerPaymentOnOdooMove(MOVE_ID, { _query: makeQuery(), _odoo: mock, paymentId: 'wms-pay-1' });
+
+    assert.equal(result.status, 'already_paid');
+    assert.equal(result.odooPaymentId, basePayment.id, 'odooPaymentId must now be populated on the already_paid branch');
+    const wizardCall = mock.calls.find(c => c.model === 'account.payment.register');
+    assert.equal(wizardCall, undefined, 'wizard must still never be called for an already-paid invoice');
+  });
+
+  test('syncPaymentToOdoo writes invoice_payments.odoo_id when Odoo already shows the payment settled', async () => {
+    const invoiceRow = { id: 'inv-1', odoo_id: String(MOVE_ID), invoice_number: 'INV-001' };
+    const paymentRow = { id: 'pay-1', invoice_id: 'inv-1', odoo_id: null, amount: 148.15, method: 'cash', reference: null, note: null };
+    const q = makeStatefulQuery({ paymentRow, invoiceRow });
+    const mock = makeOdoo({
+      'account.move.read':          () => [{ ...baseMove, payment_state: 'paid', amount_residual: 0 }],
+      'account.payment.search_read': () => [basePayment],
+    });
+
+    const result = await syncPaymentToOdoo('pay-1', { _query: q, _odoo: mock });
+
+    assert.equal(result.odooId, basePayment.id);
+    assert.equal(q.updates.length, 1, 'invoice_payments.odoo_id must be written exactly once');
+    assert.equal(q.updates[0][0], String(basePayment.id));
+  });
+
+  test('retry queue no longer repeats the same payment — second syncPaymentToOdoo call is a no-op against Odoo', async () => {
+    const invoiceRow = { id: 'inv-1', odoo_id: String(MOVE_ID), invoice_number: 'INV-001' };
+    const paymentRow = { id: 'pay-1', invoice_id: 'inv-1', odoo_id: null, amount: 148.15, method: 'cash', reference: null, note: null };
+    const q = makeStatefulQuery({ paymentRow, invoiceRow });
+    const mock = makeOdoo({
+      'account.move.read':          () => [{ ...baseMove, payment_state: 'paid', amount_residual: 0 }],
+      'account.payment.search_read': () => [basePayment],
+    });
+
+    await syncPaymentToOdoo('pay-1', { _query: q, _odoo: mock });               // first attempt — resolves the bug
+    const callsAfterFirst = mock.calls.length;
+    const result2 = await syncPaymentToOdoo('pay-1', { _query: q, _odoo: mock }); // simulated retry
+
+    assert.equal(result2.skipped, 'already synced');
+    assert.equal(mock.calls.length, callsAfterFirst, 'a retry after odoo_id is set must not call Odoo again at all');
+  });
+
+  test('search_read failure on the already-paid fast path logs a warning but does not throw', async () => {
+    const mock = makeOdoo({
+      'account.move.read':          () => [{ ...baseMove, payment_state: 'paid', amount_residual: 0 }],
+      'account.payment.search_read': () => { throw new Error('XML-RPC timeout'); },
+    });
+    const result = await registerPaymentOnOdooMove(MOVE_ID, { _query: makeQuery(), _odoo: mock, paymentId: 'wms-pay-2' });
+
+    assert.equal(result.status, 'already_paid');
+    assert.equal(result.odooPaymentId, null, 'lookup failure degrades to null, matching pre-fix behavior — does not throw');
+  });
+
+  test('search_read returns multiple payments — the first (latest, per order:id desc) is selected', async () => {
+    const mock = makeOdoo({
+      'account.move.read':          () => [{ ...baseMove, payment_state: 'paid', amount_residual: 0 }],
+      'account.payment.search_read': () => [
+        { ...basePayment, id: 45, date: '2026-07-22' }, // latest — order:'id desc' places this first
+        { ...basePayment, id: 22, date: '2026-07-20' }, // older
+      ],
+    });
+    const result = await registerPaymentOnOdooMove(MOVE_ID, { _query: makeQuery(), _odoo: mock, paymentId: 'wms-pay-3' });
+
+    assert.equal(result.odooPaymentId, 45, 'must select the first (latest) result, not an older match');
   });
 });
