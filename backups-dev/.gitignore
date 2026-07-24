@@ -1,0 +1,5 @@
+# Dev-specific — keeps backup-dev.sh's output out of git without touching
+# the shared root .gitignore. Mirrors the fact that production's own
+# backups/ directory (scripts/backup.sh's output) isn't tracked either.
+*
+!.gitignore
