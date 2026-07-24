@@ -206,7 +206,14 @@ services:
       # is generated separately per clone (gitignored) — see docs/DEV_ENVIRONMENT.md
       - ./deploy/chirpstack:/etc/chirpstack:ro
     environment:
-      CHIRPSTACK_POSTGRESQL__DSN: "postgres://chirpstack:${CHIRPSTACK_DB_PASSWORD}@postgres:5432/chirpstack_dev?sslmode=disable"
+      # Database name is "chirpstack", not "chirpstack_dev" — deploy/postgres/init-chirpstack.sh
+      # (reused unchanged from production) hardcodes CREATE DATABASE chirpstack; it isn't
+      # parameterized by name. No isolation is lost by matching that name here: this is a
+      # completely separate postgres container/volume from production's, so the database
+      # NAME doesn't need its own "_dev" suffix on top of that — only prod's actual
+      # docker-compose.prod.yml chirpstack DSN uses "chirpstack" too, and it's a different
+      # server entirely.
+      CHIRPSTACK_POSTGRESQL__DSN: "postgres://chirpstack:${CHIRPSTACK_DB_PASSWORD}@postgres:5432/chirpstack?sslmode=disable"
       CHIRPSTACK_REDIS__SERVERS:  "redis://default:${REDIS_PASSWORD}@redis:6379/1"
       CHIRPSTACK_API__SECRET:    ${CHIRPSTACK_API_SECRET}
       CHIRPSTACK_INTEGRATION__MQTT__USERNAME: ${MQTT_CHIRPSTACK_USERNAME}
@@ -249,6 +256,19 @@ services:
         condition: service_healthy
       frontend:
         condition: service_healthy
+      # nginx.conf has static `upstream odoo {...}` / `upstream chirpstack {...}`
+      # blocks — nginx resolves those hostnames once, at its own startup, not
+      # dynamically. Without these, nginx could start before the odoo/chirpstack
+      # containers exist at all (a real race on a fresh `up -d`, worse while
+      # chirpstack was crash-looping — its container was intermittently not
+      # attached to the network at the exact moment nginx tried to (re)start),
+      # causing "host not found in upstream" and a crash loop of its own.
+      # service_started (not service_healthy) is enough: nginx only needs the
+      # container to exist for DNS resolution, not to be app-ready yet.
+      odoo:
+        condition: service_started
+      chirpstack:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health || exit 1"]
       interval: 15s

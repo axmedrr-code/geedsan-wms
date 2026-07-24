@@ -53,7 +53,7 @@ docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build
 echo ""
 echo "Waiting for services to report healthy (up to 3 min)..."
 for i in $(seq 1 36); do
-  UNHEALTHY=$(docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}} {{.Health}}' 2>/dev/null \
+  UNHEALTHY=$(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps --format '{{.Name}} {{.Health}}' 2>/dev/null \
     | grep -v healthy | grep -v '^$' || true)
   if [[ -z "$UNHEALTHY" ]]; then
     echo "All services healthy."
@@ -62,7 +62,7 @@ for i in $(seq 1 36); do
   sleep 5
 done
 
-docker compose -f "$COMPOSE_FILE" ps
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps
 echo ""
 echo "  Frontend:   http://localhost:3000"
 echo "  Backend:    http://localhost:5000/health"

@@ -134,11 +134,11 @@ check_prod_unchanged "immediately after dev 'up -d'"
 sep "STEP 6 — Waiting up to 3 min for dev services healthy (checking prod on every poll)"
 for i in $(seq 1 36); do
   check_prod_unchanged "health-wait poll $i"
-  UNHEALTHY=$(docker compose -f docker-compose.dev.yml ps --format '{{.Name}} {{.Health}}' 2>/dev/null | grep -v healthy | grep -v '^$' || true)
+  UNHEALTHY=$(docker compose -f docker-compose.dev.yml --env-file .env.dev ps --format '{{.Name}} {{.Health}}' 2>/dev/null | grep -v healthy | grep -v '^$' || true)
   [[ -z "$UNHEALTHY" ]] && { echo "All dev services healthy after ~$((i*5))s"; break; }
   sleep 5
 done
-docker compose -f docker-compose.dev.yml ps
+docker compose -f docker-compose.dev.yml --env-file .env.dev ps
 
 sep "STEP 7 — Port conflict check"
 ss -tlnp 2>/dev/null | grep -E ":(80|443|3000|5000|5433|6380|1884|8070|8081|8080|8443)\b" || echo "(ss not available — check manually: netstat -tlnp)"
@@ -150,7 +150,7 @@ check_prod_unchanged "after network/volume check"
 
 sep "STEP 9 — docker compose -f docker-compose.dev.yml down (dev only)"
 assert_dev_dir
-docker compose -f docker-compose.dev.yml down
+docker compose -f docker-compose.dev.yml --env-file .env.dev down
 check_prod_unchanged "immediately after dev 'down'"
 
 sep "STEP 10 — Final production verification"
@@ -160,8 +160,8 @@ check_prod_unchanged "final check"
 sep "STEP 11 — Captured output: docker ps / dev ps / networks / volumes"
 echo "--- docker ps ---"; docker ps
 echo ""
-echo "--- docker compose -f docker-compose.dev.yml ps (expect empty, stopped by down) ---"
-docker compose -f docker-compose.dev.yml ps
+echo "--- docker compose -f docker-compose.dev.yml --env-file .env.dev ps (expect empty, stopped by down) ---"
+docker compose -f docker-compose.dev.yml --env-file .env.dev ps
 echo ""
 echo "--- docker network ls ---"; docker network ls
 echo ""
