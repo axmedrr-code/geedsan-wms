@@ -41,12 +41,34 @@ if [[ ! -f "$SECRETS_TOML" ]]; then
     echo "ERROR: CHIRPSTACK_DB_PASSWORD, REDIS_PASSWORD, MQTT_CHIRPSTACK_USERNAME, MQTT_CHIRPSTACK_PASSWORD must all be set in $ENV_FILE." >&2
     exit 1
   fi
+  # ChirpStack v4.19.0's Redis client (deadpool_redis -> redis crate v1.0, the
+  # exact pinned dependency) parses this as a strict RFC 3986 URL. An unencoded
+  # reserved character in the password (this one commonly contains / and =,
+  # from openssl rand -base64) prematurely terminates the authority section at
+  # the first raw '/' — before the real '@' separator is ever reached — which
+  # is why it failed with "Redis URL did not parse - InvalidClientConfig"
+  # regardless of the password being correct (confirmed: redis-cli auth with
+  # the same raw password succeeds, since that path never goes through URL
+  # parsing at all). DB passwords are unaffected — generated via -hex, which
+  # is inherently URL-safe.
+  urlencode() {
+    local s="$1" out= c
+    for (( i=0; i<${#s}; i++ )); do
+      c="${s:i:1}"
+      case "$c" in
+        [a-zA-Z0-9.~_-]) out+="$c" ;;
+        *) printf -v hex '%%%02X' "'$c"; out+="$hex" ;;
+      esac
+    done
+    printf '%s' "$out"
+  }
+  REDIS_PASSWORD_URLENC=$(urlencode "$REDIS_PASSWORD")
   cat > "$SECRETS_TOML" <<TOML
 [postgresql]
 dsn = "postgres://chirpstack:${CHIRPSTACK_DB_PASSWORD}@postgres:5432/chirpstack?sslmode=disable"
 
 [redis]
-servers = ["redis://default:${REDIS_PASSWORD}@redis:6379/1"]
+servers = ["redis://default:${REDIS_PASSWORD_URLENC}@redis:6379/1"]
 
 [integration.mqtt]
 event_topic   = "application/{{application_id}}/device/{{dev_eui}}/event/{{event}}"
