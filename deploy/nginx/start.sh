@@ -2,12 +2,17 @@
 # nginx entrypoint — selects HTTP-only or HTTPS configuration at container startup.
 #
 # HTTPS mode: loaded when /etc/letsencrypt/live/geedsan-wms/fullchain.pem exists
-#             and is valid for at least another 24 hours.
+#             and is valid for at least another 24 hours. That path holds a
+#             Cloudflare Origin CA certificate (issued from the Cloudflare
+#             dashboard, valid until 2041) — NOT a certbot/Let's Encrypt
+#             cert; the directory name is just reused for path consistency.
+#             certbot is not installed or used anywhere in this stack.
 # HTTP-only:  loaded in all other cases. All four subdomains are served over
-#             plain HTTP. Restart this container after issuing SSL certificates
-#             to switch to HTTPS automatically.
+#             plain HTTP. Restart this container after placing new SSL
+#             certificates at $CERT to switch to HTTPS automatically.
 #
-# Usage (after certbot issues certs):
+# Usage (after placing new certs at $CERT, e.g. a fresh Cloudflare Origin
+# CA certificate from the dashboard):
 #   docker compose -f docker-compose.prod.yml --env-file .env.production restart nginx
 set -e
 
@@ -23,14 +28,17 @@ GENERATED_DIR="/etc/nginx/generated"
 mkdir -p "$ACTIVE_DIR" "$GENERATED_DIR"
 
 # Determine mode
-if [ -f "$CERT" ] && openssl x509 -checkend 86400 -noout -in "$CERT" 2>/dev/null; then
+if [ -f "$CERT" ] && { ! command -v openssl >/dev/null || openssl x509 -checkend 86400 -noout -in "$CERT" 2>/dev/null; }; then
     MODE="https"
     echo "[nginx-start] SSL certificate valid — starting in HTTPS mode"
 else
     MODE="http"
     if [ -f "$CERT" ]; then
         echo "[nginx-start] WARNING: SSL certificate expired or expiring within 24 h"
-        echo "[nginx-start] Run: certbot renew --force-renewal"
+        echo "[nginx-start] This is a Cloudflare Origin CA cert (valid until 2041, not"
+        echo "[nginx-start] certbot-managed) — this warning this early means the file at"
+        echo "[nginx-start] $CERT was replaced or corrupted, not that scheduled renewal is due."
+        echo "[nginx-start] Re-issue from Cloudflare dashboard: SSL/TLS -> Origin Server -> Create Certificate"
     else
         echo "[nginx-start] SSL certificate not found — starting in HTTP-only mode"
         echo "[nginx-start] Restart this container after issuing certificates to enable HTTPS"
