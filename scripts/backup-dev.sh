@@ -22,6 +22,11 @@ FAILED=0
 for DB in geedsan_wms_dev odoo chirpstack_dev; do
   OUT="$BACKUP_DIR/${DB}_${TIMESTAMP}.sql.gz"
   echo "  -> $DB -> $OUT"
+  if [[ -e "$OUT" ]]; then
+    FAILED=1
+    echo "  ❌ Refusing to overwrite existing backup: $OUT (two runs within the same second?)"
+    continue
+  fi
   if docker exec "$CONTAINER" pg_dump -U "$DB_USER" "$DB" 2>/tmp/backup_dev_err.log | gzip > "$OUT"; then
     SIZE=$(stat -c%s "$OUT" 2>/dev/null || stat -f%z "$OUT" 2>/dev/null || echo 0)
     echo "     ok ($SIZE bytes)"
