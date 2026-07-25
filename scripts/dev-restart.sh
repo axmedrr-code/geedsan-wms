@@ -11,5 +11,5 @@ set -euo pipefail
 DEPLOY_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DEPLOY_DIR"
 
-docker compose -f docker-compose.dev.yml --env-file .env.dev restart "$@"
+docker compose -f docker-compose.dev.yml --env-file .env.development restart "$@"
 docker compose -f docker-compose.dev.yml ps

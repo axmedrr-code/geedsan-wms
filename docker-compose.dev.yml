@@ -3,16 +3,25 @@
 # on the same VPS from a SEPARATE clone (/opt/geedsan-dev).
 #
 # Isolation from production:
-#   - Separate compose project (derived from the /opt/geedsan-dev directory name)
-#   - Separate network (geedsan_dev_network, not external — unrelated to prod's geedsan_default)
+#   - Explicit compose project name (`name:` below) — not left to be derived
+#     from the working directory. Relying on implicit/derived naming is
+#     exactly what caused a real network-drift incident on the prod side
+#     (see docs/EMERGENCY_RECOVERY_GUIDE.md); this is the same fix applied
+#     here defensively, before it can bite dev too.
+#   - Separate network (geedsan_dev_network, not external — unrelated to prod's
+#     live network)
 #   - Separate, explicitly-named volumes (geedsan_dev_*)
-#   - Every service on a different host port than production publishes
+#   - Every host port bound to 127.0.0.1 only (never 0.0.0.0) and on numbers
+#     production never publishes (production only ever publishes 80/443;
+#     nothing here uses those)
 #   - No static IPs / network_mode hacks — Linux bridge DNS resolves correctly
 #     (same clean pattern already proven in docker-compose.prod.yml)
 #
 # Usage:
-#   docker compose -f docker-compose.dev.yml --env-file .env.dev up -d
+#   docker compose -f docker-compose.dev.yml --env-file .env.development up -d
 #   (or: ./scripts/dev-up.sh)
+
+name: geedsan-dev
 
 services:
 
@@ -33,7 +42,7 @@ services:
       # no dev-specific fork needed.
       - ./deploy/postgres/init-chirpstack.sh:/docker-entrypoint-initdb.d/10-chirpstack.sh:ro
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     networks:
       - geedsan-dev-network
     healthcheck:
@@ -54,7 +63,7 @@ services:
     volumes:
       - geedsan_dev_redis_data:/data
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     networks:
       - geedsan-dev-network
     healthcheck:
@@ -78,7 +87,7 @@ services:
       - geedsan_dev_mosquitto_data:/mosquitto/data
       - geedsan_dev_mosquitto_log:/mosquitto/log
     ports:
-      - "1884:1883"
+      - "127.0.0.1:1884:1883"
     networks:
       - geedsan-dev-network
     healthcheck:
@@ -124,7 +133,7 @@ services:
       - geedsan_dev_backend_reports:/app/reports
       - geedsan_dev_backend_logs:/app/logs
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"
     networks:
       - geedsan-dev-network
     depends_on:
@@ -153,7 +162,7 @@ services:
       NODE_ENV: development
       HOSTNAME:  0.0.0.0
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     networks:
       - geedsan-dev-network
     depends_on:
@@ -182,7 +191,7 @@ services:
       PASSWORD:       ${DB_PASSWORD}
       ADMIN_PASSWORD: ${ODOO_ADMIN_PASSWORD}
     ports:
-      - "8070:8069"
+      - "127.0.0.1:8070:8069"
     networks:
       - geedsan-dev-network
     depends_on:
@@ -221,7 +230,7 @@ services:
       CHIRPSTACK_REGIONS__EU868__GATEWAY__BACKEND__MQTT__USERNAME: ${MQTT_CHIRPSTACK_USERNAME}
       CHIRPSTACK_REGIONS__EU868__GATEWAY__BACKEND__MQTT__PASSWORD: ${MQTT_CHIRPSTACK_PASSWORD}
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
     networks:
       - geedsan-dev-network
     depends_on:
@@ -247,8 +256,8 @@ services:
     container_name: geedsan-dev-nginx
     restart: unless-stopped
     ports:
-      - "8080:80"
-      - "8443:443"
+      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8443:443"
     networks:
       - geedsan-dev-network
     depends_on:

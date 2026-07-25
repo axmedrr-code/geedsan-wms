@@ -9,5 +9,5 @@ set -euo pipefail
 DEPLOY_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DEPLOY_DIR"
 
-docker compose -f docker-compose.dev.yml --env-file .env.dev down
+docker compose -f docker-compose.dev.yml --env-file .env.development down
 echo "Dev stack stopped. Volumes preserved — run dev-up.sh to bring it back with data intact."

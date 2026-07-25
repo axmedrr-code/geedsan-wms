@@ -2,7 +2,7 @@ node_modules/
 .env
 .env.local
 .env.production
-.env.dev
+.env.development
 *.log
 dist/
 .next/
@@ -13,4 +13,5 @@ logs/
 backup_pre_*.sql
 docker/certs/
 deploy/chirpstack/secrets.toml
+deploy/mosquitto/passwd
 .deploy-state

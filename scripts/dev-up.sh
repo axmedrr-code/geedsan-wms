@@ -10,12 +10,12 @@ DEPLOY_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DEPLOY_DIR"
 
 COMPOSE_FILE="docker-compose.dev.yml"
-ENV_FILE=".env.dev"
+ENV_FILE=".env.development"
 PASSWD_FILE="deploy/mosquitto/passwd"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "ERROR: $ENV_FILE not found." >&2
-  echo "  cp deploy/.env.dev.example .env.dev" >&2
+  echo "  cp .env.development.example .env.development" >&2
   echo "  then fill in every CHANGE_ME value (see docs/DEV_ENVIRONMENT.md)." >&2
   exit 1
 fi
@@ -82,6 +82,42 @@ TOML
 else
   echo "ChirpStack secrets.toml already exists — leaving it as-is."
 fi
+
+REGION_TOML="deploy/chirpstack/region_eu868.toml"
+echo "Writing resolved MQTT credentials into $REGION_TOML..."
+# Unlike secrets.toml, this file IS committed to git (production needs the
+# tracked empty-placeholder template present via checkout), so it can't be
+# gitignored — instead this block runs unconditionally on every dev-up.sh
+# run, so a future `git pull` resetting it to placeholders self-heals on the
+# next run. CHIRPSTACK_REGIONS__EU868__GATEWAY__BACKEND__MQTT__USERNAME/
+# __PASSWORD (docker-compose.dev.yml) are meant to override the username="" /
+# password="" placeholders here at ChirpStack startup, but empirically don't
+# reliably apply to this nested array-of-tables path — confirmed by diagnosis
+# on 2026-07-24: chirpstack::gateway::backend::mqtt logged continuous
+# "NotAuthorized" while chirpstack::integration::mqtt (same credentials,
+# overriding a non-empty placeholder in secrets.toml) connected fine. Baking
+# the real value in directly, the same way secrets.toml already does, sidesteps
+# the override entirely. After first clone, run once:
+#   git update-index --skip-worktree deploy/chirpstack/region_eu868.toml
+# so git stops flagging this file's local credential as a pending change.
+set -a; source "$ENV_FILE"; set +a
+if [[ -z "${MQTT_CHIRPSTACK_USERNAME:-}" || -z "${MQTT_CHIRPSTACK_PASSWORD:-}" ]]; then
+  echo "ERROR: MQTT_CHIRPSTACK_USERNAME, MQTT_CHIRPSTACK_PASSWORD must be set in $ENV_FILE." >&2
+  exit 1
+fi
+cat > "$REGION_TOML" <<TOML
+[[regions]]
+id="eu868"
+description="EU868"
+common_name="EU868"
+
+[regions.gateway.backend.mqtt]
+server="tcp://mosquitto:1883/"
+username="${MQTT_CHIRPSTACK_USERNAME}"
+password="${MQTT_CHIRPSTACK_PASSWORD}"
+TOML
+chmod 644 "$REGION_TOML"
+echo "$REGION_TOML written."
 
 if [[ ! -f "$PASSWD_FILE" ]]; then
   echo "Mosquitto passwd file not found — generating from $ENV_FILE..."

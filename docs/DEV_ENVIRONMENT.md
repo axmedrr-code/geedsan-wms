@@ -1,173 +1,110 @@
-# Development Environment (VPS-hosted, isolated from production)
+# Development Environment
 
-A complete second copy of the NUWACO WMS stack, running on the same Contabo
-VPS as production but fully isolated from it — separate clone, separate
-Docker network, separate volumes, separate database, separate ports. Lets
-you develop directly on the VPS via VS Code Remote-SSH instead of depending
-on Docker Desktop on Windows.
-
-**Reuses the existing `backend/` and `frontend/` source code and Dockerfiles
-unchanged** — this is a second deployment of the same application, not a new
-one. The only new files are infrastructure: `docker-compose.dev.yml`,
-`.env.dev`, and `deploy/nginx-dev/`.
-
-## Isolation from production — how it's guaranteed, not just intended
+A second, fully isolated copy of the stack for developing directly on the
+VPS instead of Docker Desktop on Windows. Production and development are
+different directories, different git branches, different compose projects
+— there is no path by which a dev command can reach a production
+container, volume, or network.
 
 | | Production | Development |
 |---|---|---|
 | Directory | `/opt/geedsan` | `/opt/geedsan-dev` |
+| Git branch | `main` | `feature/dev-environment` |
 | Compose file | `docker-compose.prod.yml` | `docker-compose.dev.yml` |
-| Env file | `.env.production` | `.env.dev` |
-| Docker network | `geedsan_default` | `geedsan_dev_network` |
-| Container names | `geedsan-*` | `geedsan-dev-*` |
-| Volumes | `geedsan_*` (unprefixed) | `geedsan_dev_*` |
-| Database | `geedsan_wms` | `geedsan_wms_dev` |
-| Frontend | internal only (behind nginx) | `:3000` |
-| Backend | internal only (behind nginx) | `:5000` |
-| PostgreSQL | internal only | `:5433` |
-| Redis | internal only | `:6380` |
-| Mosquitto | `:1883` | `:1884` |
-| Odoo | internal only (behind nginx) | `:8070` |
-| ChirpStack | internal only (behind nginx) | `:8081` |
-| Nginx | `:80`, `:443` | `:8080`, `:8443` |
+| Compose project | `geedsan` (implicit) | `geedsan-dev` (explicit `name:`) |
+| Env file | `.env.production` | `.env.development` |
+| Volumes | unprefixed (`postgres_data`, ...) | `geedsan_dev_*` |
+| Host ports | only 80/443, published on all interfaces | published on `127.0.0.1` only — never 80/443 |
 
-Because these are two entirely separate `git clone` checkouts with distinct
-compose project names, network names, and volume names, there is no config
-path by which a dev command can accidentally reach a production container,
-volume, or the reverse.
-
-## 1. First-time setup
+## 1. Set up `/opt/geedsan-dev`
 
 ```bash
 sudo mkdir -p /opt/geedsan-dev
 sudo chown "$USER":"$USER" /opt/geedsan-dev
-git clone <your-repo-url> /opt/geedsan-dev
+git clone -b feature/dev-environment https://github.com/axmedrr-code/geedsan-wms.git /opt/geedsan-dev
 cd /opt/geedsan-dev
 
-cp deploy/.env.dev.example .env.dev
-nano .env.dev   # fill in every CHANGE_ME — see the generation commands below
-
+cp .env.development.example .env.development
+nano .env.development   # fill in every CHANGE_ME — see the generation
+                         # commands in the file's own header comment
 chmod +x scripts/dev-*.sh
 ```
 
-Generate real secrets (do not reuse production's values):
-
-```bash
-openssl rand -base64 48    # -> JWT_SECRET
-openssl rand -base64 48    # -> JWT_REFRESH_SECRET
-openssl rand -base64 32    # -> REDIS_PASSWORD
-openssl rand -base64 32    # -> CHIRPSTACK_API_SECRET
-openssl rand -hex 32       # -> DB_PASSWORD
-openssl rand -hex 32       # -> CHIRPSTACK_DB_PASSWORD
-openssl rand -hex 20       # -> MQTT_PASSWORD, MQTT_CHIRPSTACK_PASSWORD, ODOO_ADMIN_PASSWORD (run separately for each)
-```
-
-## 2. Bring it up
-
+If `/opt/geedsan-dev` already exists (e.g. from earlier prototyping — this
+is expected, see the note on existing volumes below):
 ```bash
 cd /opt/geedsan-dev
-./scripts/dev-up.sh
+git fetch origin feature/dev-environment
+git checkout feature/dev-environment
+git pull origin feature/dev-environment
 ```
 
-This validates `.env.dev` (fails clearly if any `CHANGE_ME` remains), generates
-the Mosquitto password file from `.env.dev` if it doesn't exist yet, builds
-and starts all 8 services, and waits for them to report healthy.
+**Note on pre-existing volumes:** if `geedsan_dev_*` volumes already exist
+from earlier work on this server, they'll be reused automatically —
+`docker-compose.dev.yml`'s volumes are named explicitly to match, not
+regenerated. Confirm with `docker volume ls | grep geedsan_dev` before
+your first `dev-up.sh` if you want to double check what's already there.
 
-## 3. Verify
+For a full, cautious first-time validation that also verifies production
+is never touched in the process, use `scripts/validate-dev-env.sh` instead
+of the manual steps above — it backs up production first, checks
+production's container state after every single step, and aborts the
+instant anything about it changes.
+
+## 2. Start / stop
 
 ```bash
-docker compose -f docker-compose.dev.yml ps        # all 8 should show "healthy"
-
-curl http://localhost:3000/                # frontend
-curl http://localhost:5000/health          # backend
-curl http://localhost:8070/                # odoo
-curl http://localhost:8081/                # chirpstack
-curl http://localhost:8080/health          # dev nginx (HTTP)
-curl -k https://localhost:8443/health      # dev nginx (HTTPS, self-signed — -k skips cert verification)
-
-# Confirm production is completely unaffected:
-docker ps --filter "name=geedsan-" --format "{{.Names}}\t{{.Status}}" | grep -v dev
+./scripts/dev-up.sh        # build + start, wait for healthy
+./scripts/dev-down.sh      # stop (volumes preserved)
+./scripts/dev-restart.sh [service]
+./scripts/dev-logs.sh [service]
+./scripts/backup-dev.sh    # dump dev databases to backups-dev/
 ```
 
-## 4. Day-to-day
+Once up: frontend `http://localhost:3000`, backend
+`http://localhost:5000/health`, Odoo `http://localhost:8070`, ChirpStack
+`http://localhost:8081`, dev nginx `http://localhost:8080` /
+`https://localhost:8443`. All bound to `127.0.0.1` — reachable via SSH
+tunnel or from the VPS itself, not from the open internet.
 
-```bash
-./scripts/dev-logs.sh              # follow all logs
-./scripts/dev-logs.sh backend      # follow just one service
-./scripts/dev-restart.sh backend   # restart one service after a code change
-./scripts/dev-down.sh              # stop everything (volumes/data preserved)
-./scripts/backup-dev.sh            # dump dev databases to backups-dev/
+## 3. Safety rules
+
+- **Never run a bare `docker compose` command in either directory.**
+  Always `-f <compose-file> --env-file <env-file>`, or use the
+  `scripts/dev-*.sh` / `scripts/prod-*.sh` wrappers, which set this
+  correctly every time. This is exactly how a real production outage
+  happened on this project — see `docs/EMERGENCY_RECOVERY_GUIDE.md`.
+- **Never point dev at prod's database, volumes, or network**, and vice
+  versa. They're already isolated by name (`geedsan_dev_*` vs. unprefixed,
+  separate compose projects, separate networks) — don't override
+  `DB_HOST`, a volume name, or `--network` to "borrow" the other
+  environment's data for a quick test. If dev needs production-shaped
+  data, restore a `scripts/backup.sh` dump into dev's own Postgres, don't
+  connect dev to prod's.
+- **Never commit `.env.development`** (already gitignored) or any
+  generated secret file (`deploy/mosquitto/passwd`,
+  `deploy/chirpstack/secrets.toml` — also gitignored).
+
+## 4. Promotion flow
+
+Changes are made and tested on `feature/dev-environment`, never directly
+on `main`:
+
+```
+work + test on feature/dev-environment (in /opt/geedsan-dev, or locally)
+        │
+        ▼
+   commit + push to feature/dev-environment
+        │
+        ▼
+   merge feature/dev-environment → main (PR or direct merge, reviewed)
+        │
+        ▼
+   on /opt/geedsan:  git pull origin main
+   (then follow docs/PRODUCTION_HARDENING_DEPLOYMENT.md if the change
+    touches compose files, env vars, or infrastructure — not just app code)
 ```
 
-## 5. VS Code Remote-SSH
-
-On your Windows machine:
-
-1. Install the **Remote - SSH** extension in VS Code.
-2. Add a Host entry to `~/.ssh/config` (create the file if it doesn't exist):
-   ```
-   Host geedsan-vps
-       HostName <your-vps-ip>
-       User <your-ssh-user>
-       IdentityFile ~/.ssh/id_ed25519
-   ```
-   If you don't already have a key pair for this: `ssh-keygen -t ed25519 -C "your-email"`, then copy the public key to the VPS with `ssh-copy-id geedsan-vps` (or paste `~/.ssh/id_ed25519.pub` into the VPS's `~/.ssh/authorized_keys` manually).
-3. Command Palette → **Remote-SSH: Connect to Host** → `geedsan-vps`.
-4. Once connected, **File → Open Folder** → `/opt/geedsan-dev`.
-5. Install any workspace-recommended extensions VS Code prompts for (ESLint, etc.) — these install into the *remote* VS Code server, not your local machine.
-
-Editing files now happens directly on the VPS; `./scripts/dev-restart.sh` picks up backend changes, and the frontend's dev server (if you run `npm run dev` directly instead of the built image — see note below) hot-reloads.
-
-**Note on hot reload**: `docker-compose.dev.yml` builds the same production-style Dockerfiles (`npm run build` + `next start` / `node src/index.js`), not a hot-reloading dev server — this gives you a realistic, production-like dev deployment, matching this doc's "mirrors production" goal. For active hot-reload development, run `npm run dev` directly inside the container (or via `docker compose exec`) or on the VPS host with Node installed, pointed at the same dev Postgres/Redis on their published ports (5433/6380).
-
-## 6. GitHub push/pull from the VPS
-
-Generate an SSH key on the VPS dedicated to this purpose (don't reuse a personal key):
-
-```bash
-ssh-keygen -t ed25519 -C "geedsan-dev-vps" -f ~/.ssh/geedsan_deploy_key
-cat ~/.ssh/geedsan_deploy_key.pub
-```
-
-Add the printed public key in GitHub: **Repo → Settings → Deploy keys → Add
-deploy key**. Check "Allow write access" if you want to `git push` from the
-VPS, not just `git pull`.
-
-Then, on the VPS:
-
-```bash
-cat >> ~/.ssh/config <<'EOF'
-Host github.com-geedsan
-    HostName github.com
-    User git
-    IdentityFile ~/.ssh/geedsan_deploy_key
-EOF
-
-cd /opt/geedsan-dev
-git remote set-url origin git@github.com-geedsan:<org>/<repo>.git
-git pull
-git push
-```
-
-## 7. Troubleshooting
-
-**Port already in use**: another process (possibly the old Windows-only
-`docker-compose.yml`, if you ever ran it on this VPS) is holding a dev port.
-Check with `ss -tlnp | grep <port>` and stop whatever's using it — this
-should never be a production container, since production doesn't publish
-these ports to the host at all.
-
-**A service won't go healthy**: `./scripts/dev-logs.sh <service>`. Postgres
-first, since backend/odoo/chirpstack all depend on it.
-
-**Mosquitto auth failures**: the passwd file is generated once and not
-regenerated automatically if you change `MQTT_PASSWORD` in `.env.dev` later —
-delete `deploy/mosquitto/passwd` and re-run `./scripts/dev-up.sh` to
-regenerate it.
-
-**Odoo or ChirpStack look broken through `:8080/odoo/` or `:8080/chirpstack/`**:
-expected, and documented in `deploy/nginx-dev/nginx.conf` — use the direct
-ports (`:8070`, `:8081`) instead. Odoo generates internal links assuming
-it's served at its domain root, which a path-prefixed reverse proxy breaks;
-production avoids this by using separate subdomains instead of path
-prefixes.
+Never `git push` to `main` from `/opt/geedsan-dev`, and never `git merge`
+on the production server itself — merging happens on GitHub (or wherever
+you resolve it) before `main` is ever pulled onto `/opt/geedsan`.

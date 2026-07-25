@@ -102,43 +102,43 @@ else
 fi
 check_prod_unchanged "after clone"
 
-sep "STEP 4 — Create .env.dev if needed (freshly generated dev-only secrets)"
+sep "STEP 4 — Create .env.development if needed (freshly generated dev-only secrets)"
 assert_dev_dir
-if [[ -f .env.dev ]]; then
-  echo ".env.dev already exists — leaving it as-is."
+if [[ -f .env.development ]]; then
+  echo ".env.development already exists — leaving it as-is."
 else
-  cp deploy/.env.dev.example .env.dev
-  sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=$(openssl rand -hex 32)|" .env.dev
-  sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -base64 48)|" .env.dev
-  sed -i "s|^JWT_REFRESH_SECRET=.*|JWT_REFRESH_SECRET=$(openssl rand -base64 48)|" .env.dev
-  sed -i "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$(openssl rand -base64 32)|" .env.dev
-  sed -i "s|^ODOO_ADMIN_PASSWORD=.*|ODOO_ADMIN_PASSWORD=$(openssl rand -hex 20)|" .env.dev
-  sed -i "s|^ODOO_API_KEY=.*|ODOO_API_KEY=$(openssl rand -hex 20)|" .env.dev
-  sed -i "s|^MQTT_PASSWORD=.*|MQTT_PASSWORD=$(openssl rand -hex 20)|" .env.dev
-  sed -i "s|^MQTT_CHIRPSTACK_PASSWORD=.*|MQTT_CHIRPSTACK_PASSWORD=$(openssl rand -hex 20)|" .env.dev
-  sed -i "s|^CHIRPSTACK_API_KEY=.*|CHIRPSTACK_API_KEY=$(openssl rand -hex 20)|" .env.dev
-  sed -i "s|^CHIRPSTACK_TENANT_ID=.*|CHIRPSTACK_TENANT_ID=$(openssl rand -hex 16)|" .env.dev
-  sed -i "s|^CHIRPSTACK_DB_PASSWORD=.*|CHIRPSTACK_DB_PASSWORD=$(openssl rand -hex 32)|" .env.dev
-  sed -i "s|^CHIRPSTACK_API_SECRET=.*|CHIRPSTACK_API_SECRET=$(openssl rand -base64 32)|" .env.dev
-  echo ".env.dev created."
+  cp .env.development.example .env.development
+  sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=$(openssl rand -hex 32)|" .env.development
+  sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -base64 48)|" .env.development
+  sed -i "s|^JWT_REFRESH_SECRET=.*|JWT_REFRESH_SECRET=$(openssl rand -base64 48)|" .env.development
+  sed -i "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$(openssl rand -base64 32)|" .env.development
+  sed -i "s|^ODOO_ADMIN_PASSWORD=.*|ODOO_ADMIN_PASSWORD=$(openssl rand -hex 20)|" .env.development
+  sed -i "s|^ODOO_API_KEY=.*|ODOO_API_KEY=$(openssl rand -hex 20)|" .env.development
+  sed -i "s|^MQTT_PASSWORD=.*|MQTT_PASSWORD=$(openssl rand -hex 20)|" .env.development
+  sed -i "s|^MQTT_CHIRPSTACK_PASSWORD=.*|MQTT_CHIRPSTACK_PASSWORD=$(openssl rand -hex 20)|" .env.development
+  sed -i "s|^CHIRPSTACK_API_KEY=.*|CHIRPSTACK_API_KEY=$(openssl rand -hex 20)|" .env.development
+  sed -i "s|^CHIRPSTACK_TENANT_ID=.*|CHIRPSTACK_TENANT_ID=$(openssl rand -hex 16)|" .env.development
+  sed -i "s|^CHIRPSTACK_DB_PASSWORD=.*|CHIRPSTACK_DB_PASSWORD=$(openssl rand -hex 32)|" .env.development
+  sed -i "s|^CHIRPSTACK_API_SECRET=.*|CHIRPSTACK_API_SECRET=$(openssl rand -base64 32)|" .env.development
+  echo ".env.development created."
 fi
-grep -q "CHANGE_ME" .env.dev && fail_abort "CHANGE_ME placeholder(s) remain in .env.dev"
+grep -q "CHANGE_ME" .env.development && fail_abort "CHANGE_ME placeholder(s) remain in .env.development"
 chmod +x scripts/dev-*.sh
-check_prod_unchanged "after .env.dev setup"
+check_prod_unchanged "after .env.development setup"
 
 sep "STEP 5 — docker compose -f docker-compose.dev.yml up -d"
 assert_dev_dir
-docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --build
+docker compose -f docker-compose.dev.yml --env-file .env.development up -d --build
 check_prod_unchanged "immediately after dev 'up -d'"
 
 sep "STEP 6 — Waiting up to 3 min for dev services healthy (checking prod on every poll)"
 for i in $(seq 1 36); do
   check_prod_unchanged "health-wait poll $i"
-  UNHEALTHY=$(docker compose -f docker-compose.dev.yml --env-file .env.dev ps --format '{{.Name}} {{.Health}}' 2>/dev/null | grep -v healthy | grep -v '^$' || true)
+  UNHEALTHY=$(docker compose -f docker-compose.dev.yml --env-file .env.development ps --format '{{.Name}} {{.Health}}' 2>/dev/null | grep -v healthy | grep -v '^$' || true)
   [[ -z "$UNHEALTHY" ]] && { echo "All dev services healthy after ~$((i*5))s"; break; }
   sleep 5
 done
-docker compose -f docker-compose.dev.yml --env-file .env.dev ps
+docker compose -f docker-compose.dev.yml --env-file .env.development ps
 
 sep "STEP 7 — Port conflict check"
 ss -tlnp 2>/dev/null | grep -E ":(80|443|3000|5000|5433|6380|1884|8070|8081|8080|8443)\b" || echo "(ss not available — check manually: netstat -tlnp)"
@@ -150,7 +150,7 @@ check_prod_unchanged "after network/volume check"
 
 sep "STEP 9 — docker compose -f docker-compose.dev.yml down (dev only)"
 assert_dev_dir
-docker compose -f docker-compose.dev.yml --env-file .env.dev down
+docker compose -f docker-compose.dev.yml --env-file .env.development down
 check_prod_unchanged "immediately after dev 'down'"
 
 sep "STEP 10 — Final production verification"
@@ -160,8 +160,8 @@ check_prod_unchanged "final check"
 sep "STEP 11 — Captured output: docker ps / dev ps / networks / volumes"
 echo "--- docker ps ---"; docker ps
 echo ""
-echo "--- docker compose -f docker-compose.dev.yml --env-file .env.dev ps (expect empty, stopped by down) ---"
-docker compose -f docker-compose.dev.yml --env-file .env.dev ps
+echo "--- docker compose -f docker-compose.dev.yml --env-file .env.development ps (expect empty, stopped by down) ---"
+docker compose -f docker-compose.dev.yml --env-file .env.development ps
 echo ""
 echo "--- docker network ls ---"; docker network ls
 echo ""
