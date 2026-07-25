@@ -149,3 +149,76 @@ formally adopt `geedsan_geedsan-network` instead (also affects
 `deploy/scripts/final-deploy.sh`'s deployment-verification check and
 `docker-compose.monitoring.yml`'s external network reference) is still an
 open decision — see the accompanying chat response for details.
+
+### Incident: Odoo customer sync failing with a misleading "auth" error
+
+**Symptom:** the WMS frontend showed "Odoo authentication failed — check
+ODOO_USERNAME/ODOO_API_KEY" (later, after that specific cause was ruled
+out, a raw XML-RPC fault was surfaced instead) whenever a customer sync
+ran; `odoo_id` stayed empty on every customer. Backend logs showed `Odoo
+auth appears stale, re-authenticating once` immediately followed by `POST
+/api/odoo/sync/customer/:id 500` — a two-day investigation initially
+because the log line pointed at authentication, which was never the real
+problem.
+
+**Diagnosis (two separate, unrelated causes, found in this order):**
+
+1. `.env.production` had `ODOO_API_KEY=CHANGE_ME` — the literal placeholder
+   from `.env.production.example`, never replaced with a real key. This
+   produced the *first* error message and was fixed by generating a real
+   API key.
+2. Once real credentials were in place, sync still failed — this time with
+   an Odoo-side exception: `Invalid field 'wms_customer_id' on model
+   'res.partner'`, raised from `res.partner.search()` in
+   `backend/src/services/odooService.js`. Root cause: the custom Odoo
+   module **`nuwaco_wms`** ("NUWACO WMS Integration",
+   `addons/nuwaco_wms/`, which defines `wms_customer_id` and every other
+   `wms_*` field on `res.partner`) was mounted into the Odoo container
+   (`docker-compose.prod.yml`'s `./addons:/mnt/extra-addons`) but **never
+   installed/updated in the Odoo database** — the odoo service's startup
+   command has no `-i`/`-u` flag, and neither `deploy/scripts/first-deploy.sh`
+   nor `deploy/scripts/final-deploy.sh` ran one either. The field genuinely
+   didn't exist in Odoo's schema.
+3. Compounding factor, not a root cause but why #2 took so long to see:
+   `backend/src/services/odooXmlRpcClient.js`'s retry logic matched *any*
+   error containing the word "invalid" (meant to catch
+   `AccessDenied`/session-expiry) — Odoo's own `Invalid field '...'` error
+   false-triggered it, so every sync attempt silently re-authenticated and
+   retried the *identical* broken query, and the only thing logged was a
+   fixed string with no detail about the actual exception. Fixed — the
+   regex now matches only genuine auth-failure shapes, and both the retry
+   and non-retry paths log the real `err.message`.
+
+**Fix:**
+```bash
+cd /opt/geedsan
+docker compose -f docker-compose.prod.yml --env-file .env.production run --rm odoo \
+  odoo --database=odoo -u nuwaco_wms --stop-after-init
+docker compose -f docker-compose.prod.yml --env-file .env.production restart odoo
+```
+Then restart the backend to pick up the `odooXmlRpcClient.js` fix:
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production restart backend
+```
+Verify the field actually exists before retrying a sync:
+```bash
+docker exec geedsan-postgres psql -U geedsan -d odoo -c \
+  "SELECT column_name FROM information_schema.columns WHERE table_name='res_partner' AND column_name='wms_customer_id';"
+```
+(Odoo's database is `odoo`, a separate database on the same Postgres
+container — not `geedsan_wms`.) Zero rows back means the module still
+isn't installed; don't move on to retrying syncs until this returns one row.
+
+**Prevention:** `deploy/scripts/first-deploy.sh` (fresh provision) and
+`deploy/scripts/final-deploy.sh` (upgrade) now install/update
+`nuwaco_wms` automatically as part of the Odoo startup sequence — see
+their Odoo sections. A fresh server or a redeploy will no longer silently
+skip this.
+
+**`ODOO_API_KEY` — how to avoid cause #1 recurring:** it must be a real
+key generated in Odoo, under the *same* user named by `ODOO_USERNAME` —
+Odoo 18: log in as that user → avatar (top right) → **My Profile** →
+**Account Security** tab → **New API Key**. Odoo shows the key once; copy
+it immediately into `.env.production`. A valid key paired with the wrong
+username fails the same way an invalid key does, so double-check both
+match the same Odoo user.

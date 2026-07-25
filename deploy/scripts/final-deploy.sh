@@ -557,6 +557,28 @@ else
     info "Odoo database not yet created (normal on first start)"
 fi
 
+# nuwaco_wms (addons/nuwaco_wms/) provides wms_customer_id and every other
+# wms_* field on res.partner that backend/src/services/odooService.js
+# depends on. Being mounted via the addons volume does not register it in
+# Odoo's database — that needs an explicit -u (update), run on every deploy
+# so a module code change (new fields, phase-2 additions, etc.) is always
+# picked up, not just on the deploy where it was first written. Skipped if
+# the 'odoo' database isn't ready yet — same guard as the checks above.
+if [[ "$ODOO_DB" == "1" ]]; then
+    info "Updating nuwaco_wms Odoo module..."
+    if docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm odoo \
+        odoo --database=odoo -u nuwaco_wms --stop-after-init; then
+        ok "nuwaco_wms updated"
+        docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" restart odoo
+        info "Restarted odoo to pick up the updated module"
+    else
+        fail "nuwaco_wms update failed — Odoo sync will 500 until this is resolved"
+        add_issue "nuwaco_wms module update failed — check output above"
+    fi
+else
+    info "Skipping nuwaco_wms update — 'odoo' database not ready yet (re-run once it is)"
+fi
+
 # =============================================================================
 hdr "STEP 14 — Frontend Health"
 # =============================================================================
