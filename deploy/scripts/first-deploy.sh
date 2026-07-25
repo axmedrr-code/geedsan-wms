@@ -147,6 +147,36 @@ step "Starting Odoo and ChirpStack"
 $COMPOSE up -d odoo chirpstack
 ok "Odoo and ChirpStack started (may take 2+ minutes for first-boot initialisation)"
 
+# ── 7b. Install the NUWACO WMS Odoo module ─────────────────────────────────────
+# nuwaco_wms (addons/nuwaco_wms/ — provides wms_customer_id and every other
+# wms_* field on res.partner that the backend's Odoo sync depends on) is
+# mounted into the container via the addons volume, but merely being present
+# on disk does not register it in Odoo's database — that needs an explicit
+# -i (install). Without this step every customer/meter/reading/alarm sync
+# fails with "Invalid field 'wms_customer_id' on model 'res.partner'" the
+# first time it runs. Odoo needs its own database to exist first (the
+# official image auto-initialises "odoo" with base on first boot), so wait
+# for that before installing our module on top of it.
+step "Installing nuwaco_wms Odoo module"
+echo "  Waiting for Odoo's database to be ready for module install..."
+for i in $(seq 1 40); do
+  if docker exec geedsan-postgres psql -U geedsan -tAc \
+      "SELECT 1 FROM pg_database WHERE datname='odoo';" 2>/dev/null | grep -q 1; then
+    break
+  fi
+  sleep 5
+  if [[ $i -eq 40 ]]; then
+    die "Odoo database never appeared — cannot install nuwaco_wms. Check: docker logs geedsan-odoo"
+  fi
+done
+if $COMPOSE run --rm odoo odoo --database=odoo -i nuwaco_wms --stop-after-init; then
+  ok "nuwaco_wms installed"
+else
+  die "nuwaco_wms install failed — check output above. Odoo sync will 500 on every attempt until this is resolved."
+fi
+$COMPOSE up -d odoo
+echo "  Restarted odoo to pick up the installed module."
+
 # ── 8. SSL certificate ────────────────────────────────────────────────────────
 step "SSL certificate"
 if [[ -f "/etc/letsencrypt/live/geedsan-wms/fullchain.pem" ]]; then

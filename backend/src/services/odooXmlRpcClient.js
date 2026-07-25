@@ -30,6 +30,18 @@ const authenticate = async (forceRefresh = false) => {
   return uid;
 };
 
+// Matches Odoo's actual auth/session-failure exception shapes only —
+// odoo.exceptions.AccessDenied ("Access Denied") and session-expiry faults.
+// Deliberately does NOT match a bare "invalid" — that word also appears in
+// unrelated Odoo ORM errors (e.g. "Invalid field 'x' on model 'y'" from
+// odoo.osv.expression when a domain references a field that doesn't exist
+// in the target Odoo database's schema, such as a custom module that was
+// never installed/upgraded there). Matching on it caused every such error
+// to be misreported as a stale session, retried against the identical
+// broken call, and logged with no detail about the real exception — see
+// the incident writeup for 2026-07-25/26 in docs/EMERGENCY_RECOVERY_GUIDE.md.
+const AUTH_FAILURE_RE = /access\s*denied|session\s*expired/i;
+
 // Executes an Odoo model method via execute_kw. Re-authenticates once and
 // retries on an auth-shaped failure (e.g. uid expired/invalidated server-side).
 const execute = async (model, method, args = [], kwargs = {}) => {
@@ -37,11 +49,12 @@ const execute = async (model, method, args = [], kwargs = {}) => {
   try {
     return await methodCall(objectClient, 'execute_kw', [ODOO_DB, currentUid, ODOO_SECRET, model, method, args, kwargs]);
   } catch (err) {
-    if (/access denied|session expired|invalid/i.test(err.message || '')) {
-      logger.warn('Odoo auth appears stale, re-authenticating once');
+    if (AUTH_FAILURE_RE.test(err.message || '')) {
+      logger.warn('Odoo auth appears stale, re-authenticating once', { model, method, error: err.message });
       const freshUid = await authenticate(true);
       return methodCall(objectClient, 'execute_kw', [ODOO_DB, freshUid, ODOO_SECRET, model, method, args, kwargs]);
     }
+    logger.error('Odoo execute_kw failed (non-auth error, not retried)', { model, method, error: err.message });
     throw err;
   }
 };
