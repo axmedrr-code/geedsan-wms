@@ -208,6 +208,19 @@ services:
         condition: service_healthy
       frontend:
         condition: service_healthy
+      # nginx.conf has static `upstream odoo_upstream {...}` / `upstream
+      # chirpstack_upstream {...}` blocks — nginx resolves those hostnames
+      # once, at its own startup, not dynamically. Without these, nginx
+      # could start before the odoo/chirpstack containers exist at all,
+      # causing "host not found in upstream" and a crash loop of its own
+      # (same failure class as the backend/frontend 502 incident, just
+      # previously unguarded for these two). service_started (not
+      # service_healthy) is enough: nginx only needs the container to exist
+      # for DNS resolution, not to be app-ready yet.
+      odoo:
+        condition: service_started
+      chirpstack:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health || exit 1"]
       interval: 15s
