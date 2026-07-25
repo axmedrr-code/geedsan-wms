@@ -131,7 +131,8 @@ export const tariffsAPI = {
 };
 
 export const billingReportsAPI = {
-  customerStatement: (id, p) => api.get(`/billing-reports/customer-statement/${id}`, { params: p }),
+  customerStatement:    (id, p) => api.get(`/billing-reports/customer-statement/${id}`, { params: p }),
+  customerStatementPdf: (id, p) => api.get(`/billing-reports/customer-statement/${id}/pdf`, { params: p, responseType: 'blob' }),
   zone:              (id, p) => api.get(`/billing-reports/zone/${id}`, { params: p }),
   aging:             ()      => api.get('/billing-reports/aging'),
   unpaid:            (p)     => api.get('/billing-reports/unpaid', { params: p }),
@@ -238,9 +239,11 @@ export const paymentsAPI = {
 };
 
 export const odooAPI = {
-  getStatus:    () => api.get('/odoo/status'),
-  getQueue:     () => api.get('/odoo/queue'),
-  processQueue: () => api.post('/odoo/process-queue'),
+  getStatus:      () => api.get('/odoo/status'),
+  getQueue:       () => api.get('/odoo/queue'),
+  processQueue:   () => api.post('/odoo/process-queue'),
+  verifyInvoices: (p) => api.get('/odoo/verify-invoices', { params: p }),
+  verifyPayments: (p) => api.get('/odoo/verify-payments', { params: p }),
 };
 
 export const systemAPI = {

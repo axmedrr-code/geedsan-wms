@@ -8,6 +8,7 @@ import {
   AlertTriangle, CheckCircle, Loader2, Edit, RefreshCw,
   TrendingUp, DollarSign, Clock, Activity, ExternalLink,
   FileText, CreditCard, X, Plus, Save, MessageSquare, Repeat2,
+  Download, Calendar, ArrowDownCircle, ArrowUpCircle, CloudOff,
 } from 'lucide-react';
 import {
   AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -15,7 +16,7 @@ import {
 } from 'recharts';
 import { format, formatDistanceToNow } from 'date-fns';
 import toast from 'react-hot-toast';
-import api, { customersAPI, billingAPI, metersAPI, aiAPI, usersAPI } from '../../../../lib/api'; // eslint-disable-line no-unused-vars
+import api, { customersAPI, billingAPI, billingReportsAPI, metersAPI, aiAPI, usersAPI } from '../../../../lib/api'; // eslint-disable-line no-unused-vars
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -43,6 +44,7 @@ const TABS = [
   { id: 'info',        label: 'Info'        },
   { id: 'meters',      label: 'Meters'      },
   { id: 'billing',     label: 'Billing'     },
+  { id: 'statement',   label: 'Statement'   },
   { id: 'consumption', label: 'Consumption' },
   { id: 'notes',       label: 'Notes'       },
   { id: 'activity',    label: 'Activity'    },
@@ -1004,6 +1006,188 @@ function BillingTab({ customerId }) {
   );
 }
 
+// ── Tab: Statement ────────────────────────────────────────────────────────
+
+function OdooSyncBadge({ synced }) {
+  return synced ? (
+    <span title="Synced to Odoo" className="inline-flex"><CheckCircle className="w-3.5 h-3.5 text-emerald-400" /></span>
+  ) : (
+    <span title="Not yet synced to Odoo" className="inline-flex"><CloudOff className="w-3.5 h-3.5 text-slate-600" /></span>
+  );
+}
+
+function StatementSummaryCard({ label, value, tone = 'neutral', icon: Icon }) {
+  const toneCls = {
+    neutral: 'border-slate-700 bg-slate-800/40 text-slate-200',
+    debt:    'border-amber-500/20 bg-amber-500/5 text-amber-400',
+    good:    'border-emerald-500/20 bg-emerald-500/5 text-emerald-400',
+  }[tone];
+  return (
+    <div className={`rounded-xl border p-4 ${toneCls}`}>
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">{label}</p>
+          <p className="text-xl font-bold font-display mt-1">{value}</p>
+        </div>
+        {Icon && <Icon className="w-6 h-6 opacity-25" />}
+      </div>
+    </div>
+  );
+}
+
+function StatementTab({ customerId }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const firstOfMonth = `${today.slice(0, 7)}-01`;
+  const [from, setFrom] = useState(firstOfMonth);
+  const [to, setTo] = useState(today);
+  const [pdfLoading, setPdfLoading] = useState(false);
+
+  const { data: statement, isLoading, error } = useQuery({
+    queryKey: ['customer-statement', customerId, from, to],
+    queryFn: () => billingReportsAPI.customerStatement(customerId, { from, to }).then(r => r.data),
+    enabled: !!customerId,
+  });
+
+  const applyPreset = (days) => {
+    if (days === 'all') { setFrom(''); return; }
+    setFrom(new Date(Date.now() - days * 86400000).toISOString().slice(0, 10));
+    setTo(today);
+  };
+
+  const handleDownloadPdf = async () => {
+    setPdfLoading(true);
+    try {
+      const res = await billingReportsAPI.customerStatementPdf(customerId, { from, to });
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      toast.error('Failed to generate statement PDF');
+    } finally {
+      setPdfLoading(false);
+    }
+  };
+
+  const AGING_BUCKETS = [
+    { key: 'current_balance', label: 'Current' },
+    { key: 'overdue_30',      label: '1-30 days' },
+    { key: 'overdue_60',      label: '31-60 days' },
+    { key: 'overdue_90',      label: '61-90 days' },
+    { key: 'overdue_90_plus', label: '90+ days' },
+  ];
+
+  return (
+    <div className="space-y-5">
+      {/* Date range + actions */}
+      <div className="card-glow p-4 flex flex-wrap items-end justify-between gap-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="block text-xs text-slate-400 mb-1 font-medium">From</label>
+            <input type="date" className="input" value={from} onChange={e => setFrom(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-400 mb-1 font-medium">To</label>
+            <input type="date" className="input" value={to} onChange={e => setTo(e.target.value)} />
+          </div>
+          <div className="flex gap-1.5 pb-0.5">
+            {[['30', 30], ['90', 90], ['365', 365], ['All', 'all']].map(([label, val]) => (
+              <button key={label} onClick={() => applyPreset(val)} className="btn-ghost text-xs px-2.5 py-1.5">
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <button onClick={handleDownloadPdf} disabled={pdfLoading || isLoading} className="btn-primary text-sm">
+          {pdfLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+          Download PDF
+        </button>
+      </div>
+
+      {isLoading ? <Spinner /> : error ? (
+        <div className="card-glow p-5">
+          <EmptyState icon={AlertTriangle} message={error.response?.data?.error || 'Failed to load statement'} />
+        </div>
+      ) : !statement ? null : (
+        <>
+          {/* Summary */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatementSummaryCard label="Opening Balance" value={fmt.money(statement.summary.opening_balance)} />
+            <StatementSummaryCard label="Invoiced (period)" value={fmt.money(statement.summary.total_invoiced)} icon={ArrowUpCircle} />
+            <StatementSummaryCard label="Paid (period)" value={fmt.money(statement.summary.total_paid)} tone="good" icon={ArrowDownCircle} />
+            <StatementSummaryCard
+              label="Closing Balance"
+              value={fmt.money(statement.summary.closing_balance)}
+              tone={statement.summary.closing_balance > 0 ? 'debt' : 'good'}
+              icon={DollarSign}
+            />
+          </div>
+
+          {/* Aging */}
+          <div className="card-glow p-5">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">
+              Aging Summary <span className="normal-case text-slate-600">(all outstanding invoices, as of today)</span>
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              {AGING_BUCKETS.map(b => (
+                <div key={b.key} className="text-center">
+                  <p className="text-xs text-slate-500">{b.label}</p>
+                  <p className={`text-sm font-bold mt-1 ${Number(statement.aging[b.key]) > 0 ? 'text-amber-400' : 'text-slate-300'}`}>
+                    {fmt.money(statement.aging[b.key])}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Ledger */}
+          <div className="card-glow overflow-hidden">
+            <div className="px-5 py-3 border-b border-slate-800/60 flex items-center justify-between">
+              <h3 className="font-semibold text-white text-sm">Statement Ledger</h3>
+              <span className="text-xs text-slate-500">
+                {statement.period.from ? fmt.date(statement.period.from) : 'Start'} — {statement.period.to ? fmt.date(statement.period.to) : 'Today'}
+              </span>
+            </div>
+            {statement.ledger.length === 0 ? (
+              <EmptyState icon={Calendar} message="No invoice or payment activity in this period" />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="data-table text-sm">
+                  <thead>
+                    <tr>
+                      <th>Date</th><th>Description</th><th>Debit</th><th>Credit</th><th>Balance</th><th>Odoo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="opacity-70 italic">
+                      <td className="text-slate-500 text-xs">{statement.period.from ? fmt.date(statement.period.from) : '—'}</td>
+                      <td className="text-slate-500 text-xs">Opening balance</td>
+                      <td>—</td><td>—</td>
+                      <td className="font-medium text-slate-300">{fmt.money(statement.summary.opening_balance)}</td>
+                      <td></td>
+                    </tr>
+                    {statement.ledger.map((entry) => (
+                      <tr key={`${entry.type}-${entry.id}`}>
+                        <td className="text-slate-400 text-xs">{fmt.date(entry.date)}</td>
+                        <td className="text-xs text-slate-300">{entry.description}</td>
+                        <td className="text-xs text-white">{entry.debit ? fmt.money(entry.debit) : '—'}</td>
+                        <td className="text-xs text-emerald-400">{entry.credit ? fmt.money(entry.credit) : '—'}</td>
+                        <td className={`font-medium ${entry.running_balance > 0 ? 'text-amber-400' : 'text-slate-500'}`}>
+                          {fmt.money(entry.running_balance)}
+                        </td>
+                        <td><OdooSyncBadge synced={entry.odoo_synced} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Tab 4: Consumption ────────────────────────────────────────────────────────
 
 function LeakDetectionCard({ meter }) {
@@ -1565,6 +1749,7 @@ export default function CustomerProfilePage() {
         {activeTab === 'info'        && <InfoTab customer={customer} />}
         {activeTab === 'meters'      && <MetersTab customerId={id} initialMeters={meters} />}
         {activeTab === 'billing'     && <BillingTab customerId={id} />}
+        {activeTab === 'statement'   && <StatementTab customerId={id} />}
         {activeTab === 'consumption' && <ConsumptionTab customer={{ ...customer, meters }} />}
         {activeTab === 'notes'       && <NotesTab customerId={id} />}
         {activeTab === 'activity'    && <ActivityTab customerId={id} />}

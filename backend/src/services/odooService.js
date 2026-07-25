@@ -887,6 +887,180 @@ const verifySyncedCustomers = async () => {
   return { summary, customers: results };
 };
 
+// Field-level verification report comparing WMS invoices to their synced
+// Odoo account.move records. Mirrors verifySyncedCustomers()'s shape and
+// approach. For any invoice with no odoo_id, cross-references
+// odoo_sync_queue so the report explains *why* (never enqueued, still
+// retrying, or exhausted retries) rather than just "not synced".
+// Optional from/to filter by issue_date, matching the rest of this file's
+// report endpoints — the underlying customer-statement report calls this
+// scoped to whatever range is being viewed, and it's also usable
+// unscoped for a full system audit.
+const verifyInvoiceSync = async ({ from = null, to = null } = {}) => {
+  const params = [];
+  let filter = "WHERE i.status != 'cancelled'";
+  if (from) { params.push(from); filter += ` AND i.issue_date >= $${params.length}`; }
+  if (to)   { params.push(to);   filter += ` AND i.issue_date <= $${params.length}`; }
+
+  const invoicesResult = await query(
+    `SELECT i.*, c.odoo_id AS customer_odoo_id, c.full_name AS customer_name
+     FROM invoices i JOIN customers c ON c.id = i.customer_id
+     ${filter} ORDER BY i.issue_date DESC`,
+    params
+  );
+
+  const queueResult = await query(
+    `SELECT entity_id, status, attempts, last_error, next_attempt_at FROM odoo_sync_queue WHERE entity_type='invoice'`
+  );
+  const queueMap = {};
+  for (const row of queueResult.rows) queueMap[row.entity_id] = row;
+
+  const results = [];
+  for (const inv of invoicesResult.rows) {
+    const queueEntry = queueMap[inv.id] || null;
+    const entry = {
+      wms_id: inv.id,
+      invoice_number: inv.invoice_number,
+      customer_name: inv.customer_name,
+      odoo_id: inv.odoo_id ? parseInt(inv.odoo_id, 10) : null,
+      queue: queueEntry,
+    };
+
+    if (!inv.odoo_id) {
+      entry.status = 'NOT_SYNCED';
+      entry.error = queueEntry
+        ? `In retry queue: status=${queueEntry.status}, attempts=${queueEntry.attempts}, last_error=${queueEntry.last_error || 'none recorded yet'}`
+        : 'Never synced and not in the retry queue — no sync has ever been attempted';
+      results.push(entry);
+      continue;
+    }
+
+    try {
+      const moveId = parseInt(inv.odoo_id, 10);
+      const moves = await odoo.execute('account.move', 'read', [[moveId]], {
+        fields: ['id', 'ref', 'amount_total', 'state', 'partner_id', 'move_type'],
+      });
+      if (!moves.length) {
+        entry.status = 'FAIL';
+        entry.error = `Odoo move id=${moveId} not found (may have been deleted in Odoo)`;
+        results.push(entry);
+        continue;
+      }
+      const m = moves[0];
+      const checks = {
+        ref:        { pass: m.ref === inv.invoice_number, wms: inv.invoice_number, odoo: m.ref },
+        amount:     { pass: Math.abs(Number(m.amount_total) - Number(inv.total_amount)) < 0.01, wms: Number(inv.total_amount), odoo: Number(m.amount_total) },
+        partner:    { pass: Array.isArray(m.partner_id) && String(m.partner_id[0]) === String(inv.customer_odoo_id), wms: inv.customer_odoo_id, odoo: Array.isArray(m.partner_id) ? m.partner_id[0] : m.partner_id },
+        move_type:  { pass: m.move_type === 'out_invoice', wms: 'out_invoice', odoo: m.move_type },
+      };
+      entry.checks = checks;
+      entry.odoo_state = m.state;
+      entry.status = Object.values(checks).every(c => c.pass) ? 'PASS' : 'MISMATCH';
+    } catch (err) {
+      entry.status = 'FAIL';
+      entry.error = err.message;
+    }
+    results.push(entry);
+  }
+
+  const summary = {
+    total:       results.length,
+    synced:      results.filter(r => r.odoo_id).length,
+    not_synced:  results.filter(r => r.status === 'NOT_SYNCED').length,
+    pass:        results.filter(r => r.status === 'PASS').length,
+    mismatch:    results.filter(r => r.status === 'MISMATCH').length,
+    fail:        results.filter(r => r.status === 'FAIL').length,
+    generated_at: new Date().toISOString(),
+  };
+
+  return { summary, invoices: results };
+};
+
+// Same as verifyInvoiceSync but for payments vs. Odoo account.payment.
+// Odoo's payment_state lives on the move, not the payment, so this checks
+// the payment's own amount/date/partner rather than reconciliation state —
+// reconciliation correctness is Odoo's own responsibility once the payment
+// exists there (it was created via the account.payment.register wizard).
+const verifyPaymentSync = async ({ from = null, to = null } = {}) => {
+  const params = [];
+  let filter = 'WHERE 1=1';
+  if (from) { params.push(from); filter += ` AND ip.payment_date >= $${params.length}`; }
+  if (to)   { params.push(to);   filter += ` AND ip.payment_date <= $${params.length}`; }
+
+  const paymentsResult = await query(
+    `SELECT ip.*, i.invoice_number, c.odoo_id AS customer_odoo_id, c.full_name AS customer_name
+     FROM invoice_payments ip
+     JOIN invoices i  ON i.id = ip.invoice_id
+     JOIN customers c ON c.id = i.customer_id
+     ${filter} ORDER BY ip.payment_date DESC`,
+    params
+  );
+
+  const queueResult = await query(
+    `SELECT entity_id, status, attempts, last_error, next_attempt_at FROM odoo_sync_queue WHERE entity_type='payment'`
+  );
+  const queueMap = {};
+  for (const row of queueResult.rows) queueMap[row.entity_id] = row;
+
+  const results = [];
+  for (const pay of paymentsResult.rows) {
+    const queueEntry = queueMap[pay.id] || null;
+    const entry = {
+      wms_id: pay.id,
+      invoice_number: pay.invoice_number,
+      customer_name: pay.customer_name,
+      odoo_id: pay.odoo_id ? parseInt(pay.odoo_id, 10) : null,
+      queue: queueEntry,
+    };
+
+    if (!pay.odoo_id) {
+      entry.status = 'NOT_SYNCED';
+      entry.error = queueEntry
+        ? `In retry queue: status=${queueEntry.status}, attempts=${queueEntry.attempts}, last_error=${queueEntry.last_error || 'none recorded yet'}`
+        : 'Never synced and not in the retry queue — no sync has ever been attempted';
+      results.push(entry);
+      continue;
+    }
+
+    try {
+      const paymentId = parseInt(pay.odoo_id, 10);
+      const payments = await odoo.execute('account.payment', 'read', [[paymentId]], {
+        fields: ['id', 'amount', 'date', 'state', 'partner_id'],
+      });
+      if (!payments.length) {
+        entry.status = 'FAIL';
+        entry.error = `Odoo payment id=${paymentId} not found (may have been deleted in Odoo)`;
+        results.push(entry);
+        continue;
+      }
+      const p = payments[0];
+      const checks = {
+        amount:  { pass: Math.abs(Number(p.amount) - Number(pay.amount)) < 0.01, wms: Number(pay.amount), odoo: Number(p.amount) },
+        partner: { pass: Array.isArray(p.partner_id) && String(p.partner_id[0]) === String(pay.customer_odoo_id), wms: pay.customer_odoo_id, odoo: Array.isArray(p.partner_id) ? p.partner_id[0] : p.partner_id },
+      };
+      entry.checks = checks;
+      entry.odoo_state = p.state;
+      entry.status = Object.values(checks).every(c => c.pass) ? 'PASS' : 'MISMATCH';
+    } catch (err) {
+      entry.status = 'FAIL';
+      entry.error = err.message;
+    }
+    results.push(entry);
+  }
+
+  const summary = {
+    total:       results.length,
+    synced:      results.filter(r => r.odoo_id).length,
+    not_synced:  results.filter(r => r.status === 'NOT_SYNCED').length,
+    pass:        results.filter(r => r.status === 'PASS').length,
+    mismatch:    results.filter(r => r.status === 'MISMATCH').length,
+    fail:        results.filter(r => r.status === 'FAIL').length,
+    generated_at: new Date().toISOString(),
+  };
+
+  return { summary, payments: results };
+};
+
 module.exports = {
   effectiveRef,
   syncCustomerToOdoo,
@@ -903,4 +1077,6 @@ module.exports = {
   getOdooQueue,
   getOdooStatus,
   verifySyncedCustomers,
+  verifyInvoiceSync,
+  verifyPaymentSync,
 };

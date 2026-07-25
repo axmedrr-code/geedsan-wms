@@ -6,7 +6,7 @@ const {
   syncMeterToOdoo, syncReadingToOdoo, syncAlarmToOdoo, syncInvoiceFromReadingToOdoo,
   registerPaymentOnOdooMove,
   enqueueOdooSync, getOdooQueue, getOdooStatus, processRetryQueue,
-  verifySyncedCustomers,
+  verifySyncedCustomers, verifyInvoiceSync, verifyPaymentSync,
 } = require('../services/odooService');
 
 router.get('/status', authenticate, authorize('admin'), async (req, res) => {
@@ -68,6 +68,22 @@ router.post('/queue/alarm/:id',    authenticate, authorize('admin', 'operator'),
 // Returns { summary, customers: [{wms_id, odoo_id, status, checks: {field: {pass,wms,odoo}}}] }
 router.get('/verify-customers', authenticate, authorize('admin'), async (req, res) => {
   try { res.json(await verifySyncedCustomers()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Same shape as verify-customers, for invoices vs. Odoo account.move and
+// payments vs. Odoo account.payment. Each unsynced item's `error` explains
+// why using odoo_sync_queue (never attempted / retrying / exhausted
+// retries with last_error) rather than just reporting "not synced".
+// Optional ?from=&to= scopes to issue_date/payment_date range — omit for a
+// full system audit.
+router.get('/verify-invoices', authenticate, authorize('admin'), async (req, res) => {
+  try { res.json(await verifyInvoiceSync({ from: req.query.from, to: req.query.to })); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/verify-payments', authenticate, authorize('admin'), async (req, res) => {
+  try { res.json(await verifyPaymentSync({ from: req.query.from, to: req.query.to })); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
