@@ -29,7 +29,7 @@ routes traffic through Cloudflare's edge.
 
 | Setting | Value | Reason |
 |---------|-------|--------|
-| SSL/TLS encryption mode | **Full (Strict)** | The server has a valid Let's Encrypt cert. "Full" without Strict accepts self-signed certs (MITM risk). "Flexible" terminates TLS at Cloudflare and uses plain HTTP to your server — never use Flexible. |
+| SSL/TLS encryption mode | **Full (Strict)** | The origin serves a valid Cloudflare Origin CA certificate (issued from the Cloudflare dashboard — Origin Server → Create Certificate — not certbot/Let's Encrypt; valid until 2041). "Full" without Strict accepts self-signed certs (MITM risk). "Flexible" terminates TLS at Cloudflare and uses plain HTTP to your server — never use Flexible. |
 
 ---
 
@@ -149,7 +149,10 @@ Phase 6 covers UFW rules. Cloudflare publishes its IP ranges at:
 Enable email alerts for:
 - DDoS attack detected
 - Origin unreachable
-- SSL certificate expiring (belt-and-suspenders — certbot also sends emails)
+- SSL certificate expiring (the origin cert is a Cloudflare Origin CA
+  certificate valid until 2041, not a certbot-managed cert — there is no
+  separate certbot renewal or reminder email; this Cloudflare alert is the
+  only expiry safety net)
 
 ---
 
