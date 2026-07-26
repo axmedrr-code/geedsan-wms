@@ -44,6 +44,10 @@ router.post('/', authenticate, authorize('admin','operator'), async (req,res) =>
     res.status(201).json(r.rows[0]);
   } catch(err){
     if(err.code==='23505') return res.status(409).json({error:'Device EUI or meter number already exists'});
+    // 23514 = check_violation — raised by trg_enforce_customer_single_water_type
+    // (migration 037) when this meter's water_type_id conflicts with the
+    // customer's already-established water type.
+    if(err.code==='23514') return res.status(409).json({error:err.message});
     res.status(500).json({error:'Failed to create meter'});
   }
 });
@@ -54,7 +58,10 @@ router.put('/:id', authenticate, authorize('admin','operator'), async (req,res) 
     const r=await query(`UPDATE meters SET meter_number=COALESCE($1,meter_number),customer_id=COALESCE($2,customer_id),application_id=COALESCE($3,application_id),latitude=COALESCE($4,latitude),longitude=COALESCE($5,longitude),installation_address=COALESCE($6,installation_address),firmware_version=COALESCE($7,firmware_version),notes=COALESCE($8,notes),status=COALESCE($9,status),serial_number=COALESCE($10,serial_number),zone_id=COALESCE($11,zone_id),water_type_id=COALESCE($12,water_type_id),reading_mode=COALESCE($13,reading_mode),updated_at=NOW() WHERE id=$14 RETURNING *`,[meter_number,customer_id,application_id,latitude,longitude,installation_address,firmware_version,notes,status,serial_number||null,zone_id||null,water_type_id||null,reading_mode||null,req.params.id]);
     if(!r.rows[0]) return res.status(404).json({error:'Meter not found'});
     res.json(r.rows[0]);
-  } catch(err){res.status(500).json({error:'Failed to update meter'});}
+  } catch(err){
+    if(err.code==='23514') return res.status(409).json({error:err.message});
+    res.status(500).json({error:'Failed to update meter'});
+  }
 });
 
 router.delete('/:id', authenticate, authorize('admin'), async (req,res) => {
@@ -128,6 +135,7 @@ router.post('/:id/replace', authenticate, authorize('admin', 'operator'), async 
   } catch (err) {
     await client.query('ROLLBACK');
     if (err.code === '23505') return res.status(409).json({ error: 'New meter number or device EUI already exists' });
+    if (err.code === '23514') return res.status(409).json({ error: err.message });
     console.error('POST /meters/:id/replace error:', err);
     res.status(500).json({ error: 'Failed to replace meter' });
   } finally {

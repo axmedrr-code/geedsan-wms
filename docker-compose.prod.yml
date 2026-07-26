@@ -75,6 +75,15 @@ services:
       JWT_SECRET:           ${JWT_SECRET}
       JWT_REFRESH_SECRET:   ${JWT_REFRESH_SECRET}
       FRONTEND_URL:         ${FRONTEND_URL}
+      # Public backend URL — used to build webhook/callback URLs registered
+      # with external mobile-money gateways (EVC/Sahal). Same value as
+      # API_URL (that's what "public URL of the backend API" already means);
+      # kept as its own var only because evcApiService.js/sahalApiService.js
+      # read BACKEND_URL specifically. Without this, those services fall
+      # back to 'http://localhost:5000' — a callback URL the gateway's
+      # servers can never reach — the moment live EVC_API_URL/SAHAL_API_URL
+      # credentials are configured, silently breaking payment confirmations.
+      BACKEND_URL:          ${API_URL}
       ODOO_URL:             http://odoo:8069
       ODOO_DB:              odoo
       ODOO_USERNAME:        ${ODOO_USERNAME}
@@ -93,6 +102,10 @@ services:
       EMAIL_USER:           ${EMAIL_USER}
       EMAIL_PASS:           ${EMAIL_PASS}
       TELEGRAM_BOT_TOKEN:   ${TELEGRAM_BOT_TOKEN}
+      # ENABLE_TESTING_ROUTES is deliberately NOT set here. It gates
+      # /api/testing/* (synthetic meter/reading injection into the real
+      # database, for exercising billing without hardware) — real production
+      # must never expose that. Do not add it to this list.
     volumes:
       - backend_reports:/app/reports
       - backend_uploads:/app/uploads

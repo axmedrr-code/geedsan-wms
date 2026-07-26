@@ -17,6 +17,18 @@ export default function AddMeterPage() {
   const { data: customers } = useQuery({ queryKey: ['customers', 'combo'], queryFn: () => customersAPI.list({ limit: 200 }).then(r => r.data.data) });
   const { data: waterTypes } = useQuery({ queryKey: ['water-types', 'combo'], queryFn: () => waterTypesAPI.list({ active: true }).then(r => r.data) });
 
+  // A customer has exactly one water type (enforced server-side by a DB
+  // trigger) — once they already have one established, lock this field to
+  // it instead of letting the user pick something that will just get
+  // rejected on submit.
+  const selectedCustomer = customers?.find(c => c.id === form.customer_id);
+  const lockedWaterTypeId = selectedCustomer?.water_type_id || '';
+
+  const handleCustomerChange = (customerId) => {
+    const cust = customers?.find(c => c.id === customerId);
+    setForm(f => ({ ...f, customer_id: customerId, water_type_id: cust?.water_type_id || f.water_type_id }));
+  };
+
   const mutation = useMutation({
     mutationFn: (payload) => metersAPI.create(payload),
     onSuccess: () => {
@@ -47,10 +59,20 @@ export default function AddMeterPage() {
         </div>
         <div>
           <label className="block text-xs text-slate-400 mb-1 font-medium">Water Type</label>
-          <select className="select" value={form.water_type_id} onChange={e => setForm({ ...form, water_type_id: e.target.value })}>
+          <select
+            className="select"
+            value={form.water_type_id}
+            disabled={!!lockedWaterTypeId}
+            onChange={e => setForm({ ...form, water_type_id: e.target.value })}
+          >
             <option value="">Unclassified (generic tariff rate)</option>
             {waterTypes?.map(wt => <option key={wt.id} value={wt.id}>{wt.name}</option>)}
           </select>
+          {lockedWaterTypeId && (
+            <p className="text-xs text-slate-500 mt-1">
+              Locked to this customer's existing water type — a customer has exactly one water type.
+            </p>
+          )}
         </div>
 
         {[
@@ -65,7 +87,7 @@ export default function AddMeterPage() {
           <div key={field.key}>
             <label className="block text-xs text-slate-400 mb-1 font-medium">{field.label}</label>
             {field.type === 'select' ? (
-              <select className="select" value={form.customer_id} onChange={e => setForm({ ...form, customer_id: e.target.value })}>
+              <select className="select" value={form.customer_id} onChange={e => handleCustomerChange(e.target.value)}>
                 <option value="">Select customer</option>
                 {customers?.map(c => <option key={c.id} value={c.id}>{c.full_name} ({c.customer_number})</option>)}
               </select>

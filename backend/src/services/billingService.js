@@ -548,15 +548,30 @@ const recordPayment = async (invoiceId, amount, method, reference, note, userId)
   }
 
   await recordAudit({ userId, action: 'record_payment', entityType: 'invoice', entityId: invoiceId, newValues: { amount, method, reference, note, totalPaid, status: newStatus } });
+
+  // The WMS-side payment above is already committed by this point — a
+  // failed Odoo sync must never look like a failed payment. But it must
+  // also never look like a *successful* sync: the caller gets an explicit
+  // odooSync outcome instead of a swallowed try/catch, so the UI can show
+  // a real warning rather than silently drifting out of sync with Odoo
+  // until someone happens to compare the two by hand.
+  let odooSync = { synced: false, queued: false, error: null };
   try {
     await syncPaymentToOdoo(paymentId);
+    odooSync = { synced: true, queued: false, error: null };
   } catch (syncErr) {
     logger.warn('Immediate Odoo payment sync failed — queuing for retry', { error: syncErr.message, paymentId });
-    await enqueueOdooSync('payment', paymentId).catch(e => logger.warn('Odoo payment enqueue also failed', { error: e.message }));
+    try {
+      await enqueueOdooSync('payment', paymentId);
+      odooSync = { synced: false, queued: true, error: syncErr.message };
+    } catch (enqueueErr) {
+      logger.error('Odoo payment sync failed AND could not be queued for retry — will not self-heal without manual intervention', { error: enqueueErr.message, paymentId, invoiceId });
+      odooSync = { synced: false, queued: false, error: `${syncErr.message} (retry queue also failed: ${enqueueErr.message})` };
+    }
   }
-  publish('invoice_payment', { invoiceId, totalPaid, status: newStatus, amount, method });
+  publish('invoice_payment', { invoiceId, totalPaid, status: newStatus, amount, method, odooSync });
 
-  return { invoiceId, totalPaid, newStatus };
+  return { invoiceId, totalPaid, newStatus, odooSync };
 };
 
 // ── Validation ────────────────────────────────────────────────────────────────

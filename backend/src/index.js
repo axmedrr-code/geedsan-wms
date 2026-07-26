@@ -27,8 +27,16 @@ const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(helmet({ crossOriginEmbedderPolicy: false }));
+// The bare-localhost origins below were previously always allowed,
+// production included — same overloaded-NODE_ENV problem as
+// ENABLE_TESTING_ROUTES, so it reuses that flag as the "this is a real
+// dev/staging box" signal rather than trusting NODE_ENV. A production CORS
+// policy should only ever accept the real FRONTEND_URL.
+const devOrigins = process.env.ENABLE_TESTING_ROUTES === 'true'
+  ? ['http://localhost:80', 'http://localhost']
+  : [];
 app.use(cors({
-  origin: [process.env.FRONTEND_URL || 'http://localhost:3000', 'http://localhost:80', 'http://localhost'],
+  origin: [process.env.FRONTEND_URL || 'http://localhost:3000', ...devOrigins],
   credentials: true
 }));
 app.use(compression());
@@ -86,7 +94,20 @@ app.use('/api/payments',        require('./routes/payments'));
 app.use('/api/tariffs',         require('./routes/tariffs'));
 app.use('/api/billing-reports', require('./routes/billingReports'));
 app.use('/api/odoo',            require('./routes/odoo'));
-app.use('/api/testing', require('./routes/testing'));
+
+// Synthetic-data endpoints (inject fake meters/readings through the real
+// ingestion pipeline into the real database) — gated behind an explicit
+// opt-in, not NODE_ENV. This codebase already sets NODE_ENV=production on
+// the local/Windows dev compose purely for Node/Next runtime perf, so it
+// doesn't reliably mean "this is a real production deployment" — an
+// explicit flag is the only unambiguous signal. Leave ENABLE_TESTING_ROUTES
+// unset in production; set it to 'true' only on dev/staging compose files.
+if (process.env.ENABLE_TESTING_ROUTES === 'true') {
+  app.use('/api/testing', require('./routes/testing'));
+} else {
+  logger.info('Testing routes (/api/testing) disabled — set ENABLE_TESTING_ROUTES=true to enable on a dev/staging environment');
+}
+
 app.use('/api/system', require('./routes/system'));
 app.use('/api/portal', require('./routes/paymentPortal').router);
 

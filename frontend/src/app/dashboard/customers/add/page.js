@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { customersAPI, zonesAPI, settingsAPI, metersAPI } from '../../../../lib/api';
+import { customersAPI, zonesAPI, settingsAPI, metersAPI, waterTypesAPI } from '../../../../lib/api';
 import {
   Plus, Loader2, ArrowLeft, Navigation, Gauge, X, CheckCircle,
 } from 'lucide-react';
@@ -17,7 +17,7 @@ const EMPTY_FORM = {
   address: '', city: '', district: '', gps_lat: '', gps_lng: '',
   tariff_type: 'residential', preferred_payment_method: 'cash',
   account_status: 'active', priority: 'normal',
-  connection_date: today(), zone_id: '',
+  connection_date: today(), zone_id: '', water_type_id: '',
 };
 
 // ── Assign Meter overlay shown after "Save & Assign Meter" ────────────────────
@@ -122,6 +122,12 @@ export default function AddCustomerPage() {
     queryKey: ['settings'],
     queryFn: () => settingsAPI.get().then(r => r.data),
     staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: waterTypes = [] } = useQuery({
+    queryKey: ['water-types', 'active'],
+    queryFn: () => waterTypesAPI.list({ active: true }).then(r => r.data),
+    staleTime: 2 * 60 * 1000,
   });
 
   const settings = settingsArr.reduce((acc, s) => { acc[s.key] = s.value; return acc; }, {});
@@ -422,6 +428,15 @@ export default function AddCustomerPage() {
                 <option value="industrial">Industrial</option>
                 <option value="government">Government</option>
               </select>
+            </div>
+
+            <div>
+              <label className="block text-xs text-slate-400 mb-1 font-medium">Water Type</label>
+              <select className="select" value={form.water_type_id} onChange={set('water_type_id')}>
+                <option value="">Not set yet (assigned by first meter)</option>
+                {waterTypes.map(wt => <option key={wt.id} value={wt.id}>{wt.name}</option>)}
+              </select>
+              <p className="text-xs text-slate-500 mt-1">A customer has exactly one water type — every meter assigned to them must match it.</p>
             </div>
 
             <div>

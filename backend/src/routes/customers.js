@@ -188,6 +188,7 @@ router.post('/', authenticate, authorize('admin', 'operator', 'manager'), async 
       tariff_type, national_id, address_ref, zone_id, gps_lat, gps_lng,
       connection_date, notes,
       mobile_money_number, owner_name, preferred_payment_method, priority, account_status,
+      water_type_id,
     } = req.body;
 
     if (!full_name?.trim()) return res.status(400).json({ error: 'full_name is required' });
@@ -213,8 +214,8 @@ router.post('/', authenticate, authorize('admin', 'operator', 'manager'), async 
         (house_number, full_name, email, phone, address, city, district, tariff_type,
          national_id, address_ref, zone_id, gps_lat, gps_lng, connection_date, notes,
          mobile_money_number, owner_name, preferred_payment_method, priority, account_status,
-         created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+         water_type_id, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
       RETURNING *
     `, [
       house_number, full_name, email || null, phone || null,
@@ -229,6 +230,7 @@ router.post('/', authenticate, authorize('admin', 'operator', 'manager'), async 
       preferred_payment_method || 'cash',
       priority || 'normal',
       account_status || 'active',
+      water_type_id || null,
       req.user?.id || null,
     ]);
     const newCustomer = r.rows[0];
@@ -244,6 +246,7 @@ router.post('/', authenticate, authorize('admin', 'operator', 'manager'), async 
     res.status(201).json(newCustomer);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'House number already exists' });
+    if (err.code === '23503' && err.constraint === 'customers_water_type_id_fkey') return res.status(400).json({ error: 'Unknown water_type_id' });
     console.error('POST /customers error:', err);
     res.status(500).json({ error: 'Failed to create customer' });
   }
@@ -256,15 +259,31 @@ router.put('/:id', authenticate, authorize('admin', 'operator', 'manager', 'cust
       full_name, email, phone, address, city, district, tariff_type, account_status,
       national_id, address_ref, zone_id, gps_lat, gps_lng, connection_date, notes,
       mobile_money_number, owner_name, preferred_payment_method, priority,
+      water_type_id,
     } = req.body;
     const oldR = await query(
       `SELECT full_name, email, phone, address, city, tariff_type, account_status,
               national_id, address_ref, zone_id, gps_lat, gps_lng, connection_date,
-              mobile_money_number, owner_name, preferred_payment_method, priority
+              mobile_money_number, owner_name, preferred_payment_method, priority, water_type_id
        FROM customers WHERE id=$1`,
       [req.params.id]
     );
     const old = oldR.rows[0] || {};
+
+    // A customer's water type is otherwise established automatically from
+    // their first meter (trg_enforce_customer_single_water_type, migration
+    // 037) — changing it directly here is only safe while no meter has
+    // adopted the old value yet. Once a meter exists with water_type_id
+    // set, this route must not silently desync from it.
+    if (water_type_id !== undefined && old.water_type_id && water_type_id !== old.water_type_id) {
+      const meterCheck = await query(
+        'SELECT id FROM meters WHERE customer_id=$1 AND water_type_id=$2 LIMIT 1',
+        [req.params.id, old.water_type_id]
+      );
+      if (meterCheck.rows[0]) {
+        return res.status(409).json({ error: 'This customer already has a meter classified with the current water type — change the meter instead, or replace it, to change the customer\'s water type.' });
+      }
+    }
 
     const r = await query(`
       UPDATE customers SET
@@ -287,9 +306,10 @@ router.put('/:id', authenticate, authorize('admin', 'operator', 'manager', 'cust
         owner_name               = COALESCE($17, owner_name),
         preferred_payment_method = COALESCE($18, preferred_payment_method),
         priority                 = COALESCE($19, priority),
-        updated_by               = $20,
+        water_type_id            = COALESCE($20, water_type_id),
+        updated_by               = $21,
         updated_at               = NOW()
-      WHERE id = $21
+      WHERE id = $22
       RETURNING *
     `, [
       full_name, email, phone, address, city, district, tariff_type, account_status,
@@ -302,6 +322,7 @@ router.put('/:id', authenticate, authorize('admin', 'operator', 'manager', 'cust
       owner_name !== undefined ? (owner_name || null) : null,
       preferred_payment_method || null,
       priority || null,
+      water_type_id || null,
       req.user?.id || null,
       req.params.id
     ]);
@@ -310,7 +331,7 @@ router.put('/:id', authenticate, authorize('admin', 'operator', 'manager', 'cust
     const updated = r.rows[0];
     const changed = {};
     const tracked = [
-      'full_name','email','phone','address','city','tariff_type','account_status',
+      'full_name','email','phone','address','city','tariff_type','account_status','water_type_id',
       'national_id','address_ref','zone_id','gps_lat','gps_lng','connection_date',
       'mobile_money_number','owner_name','preferred_payment_method','priority',
     ];
@@ -337,6 +358,7 @@ router.put('/:id', authenticate, authorize('admin', 'operator', 'manager', 'cust
   } catch (err) {
     console.error('PUT /customers/:id error:', err);
     if (err.code === '23514') return res.status(400).json({ error: 'Invalid value for tariff_type or account_status' });
+    if (err.code === '23503' && err.constraint === 'customers_water_type_id_fkey') return res.status(400).json({ error: 'Unknown water_type_id' });
     res.status(500).json({ error: 'Failed to update customer' });
   }
 });

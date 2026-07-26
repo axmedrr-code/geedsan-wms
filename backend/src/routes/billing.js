@@ -16,7 +16,7 @@ const {
   generateInvoiceForZone,
   generateInvoiceForSelected,
 } = require('../services/billingService');
-const { syncInvoiceToOdoo, enqueueOdooSync } = require('../services/odooService');
+const { syncInvoiceToOdoo, enqueueOdooSync, verifyInvoiceAgainstOdoo } = require('../services/odooService');
 const logger = require('../services/logger');
 
 // ── Billing Settings ──────────────────────────────────────────────────────────
@@ -266,6 +266,19 @@ router.get('/:id/payments', authenticate, authorize('admin', 'operator'), async 
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch payments' });
+  }
+});
+
+// On-demand WMS-vs-Odoo comparison for one invoice — Total/Paid/Balance/
+// Status side by side, so a discrepancy is visible on the invoice detail
+// page itself rather than only discoverable via the bulk /odoo/verify-*
+// reports or by manually comparing the two systems.
+router.get('/:id/odoo-check', authenticate, authorize('admin', 'operator'), async (req, res) => {
+  try {
+    res.json(await verifyInvoiceAgainstOdoo(req.params.id));
+  } catch (err) {
+    const status = err.message === 'Invoice not found' ? 404 : 500;
+    res.status(status).json({ error: err.message });
   }
 });
 

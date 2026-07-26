@@ -1110,6 +1110,68 @@ const verifyPaymentSync = async ({ from = null, to = null } = {}) => {
   return { summary, payments: results };
 };
 
+// Same comparison verifyInvoiceSync/verifyPaymentSync do across the whole
+// system, scoped to one invoice so it can run inline on the invoice detail
+// page — this is what actually makes a Total/Paid/Balance/Status mismatch
+// (like WMS showing more paid than Odoo does after a payment whose sync
+// silently failed) visible to a normal user, not just discoverable by
+// someone who thinks to run the bulk report.
+const ODOO_PAYMENT_STATE_TO_WMS_STATUS = {
+  paid: 'paid', partial: 'pending', not_paid: 'pending', in_payment: 'pending', reversed: 'cancelled',
+};
+
+const verifyInvoiceAgainstOdoo = async (invoiceId, { _query = query, _odoo = odoo } = {}) => {
+  const invR = await _query(
+    `SELECT i.*, COALESCE((SELECT SUM(amount) FROM invoice_payments WHERE invoice_id=i.id),0) AS wms_paid
+     FROM invoices i WHERE i.id=$1`,
+    [invoiceId]
+  );
+  const invoice = invR.rows[0];
+  if (!invoice) throw new Error('Invoice not found');
+
+  const wmsTotal   = Number(invoice.total_amount);
+  const wmsPaid    = Number(invoice.wms_paid);
+  const wmsBalance = +(wmsTotal - wmsPaid).toFixed(2);
+  const wms = { total: wmsTotal, paid: wmsPaid, balance: wmsBalance, status: invoice.status };
+
+  if (!invoice.odoo_id) {
+    return { synced: false, wms, odoo: null, matches: null, reason: 'Invoice has not been synced to Odoo yet' };
+  }
+
+  const moveId = parseInt(invoice.odoo_id, 10);
+  let moves;
+  try {
+    moves = await _odoo.execute('account.move', 'read', [[moveId]], {
+      fields: ['id', 'state', 'payment_state', 'amount_total', 'amount_residual'],
+    });
+  } catch (err) {
+    return { synced: false, wms, odoo: null, matches: null, reason: `Could not reach Odoo: ${err.message}` };
+  }
+  if (!moves.length) {
+    return { synced: false, wms, odoo: null, matches: null, reason: `Odoo move id=${moveId} not found (may have been deleted in Odoo)` };
+  }
+
+  const m = moves[0];
+  const odooTotal   = Number(m.amount_total);
+  const odooBalance = Number(m.amount_residual);
+  const odooPaid    = +(odooTotal - odooBalance).toFixed(2);
+  // WMS's 'overdue' is a due-date-derived label Odoo has no equivalent
+  // for — an overdue invoice is still just "not fully paid" to Odoo, so
+  // it's treated as a match against Odoo's not_paid/partial states.
+  const odooStatus = ODOO_PAYMENT_STATE_TO_WMS_STATUS[m.payment_state] || m.payment_state;
+  const statusMatches = wms.status === odooStatus || (wms.status === 'overdue' && odooStatus === 'pending');
+
+  const odooSide = { total: odooTotal, paid: odooPaid, balance: odooBalance, status: odooStatus, payment_state: m.payment_state, move_state: m.state };
+  const matches = {
+    total:   Math.abs(wmsTotal - odooTotal) < 0.01,
+    paid:    Math.abs(wmsPaid - odooPaid) < 0.01,
+    balance: Math.abs(wmsBalance - odooBalance) < 0.01,
+    status:  statusMatches,
+  };
+
+  return { synced: true, wms, odoo: odooSide, matches, allMatch: Object.values(matches).every(Boolean) };
+};
+
 module.exports = {
   effectiveRef,
   syncCustomerToOdoo,
@@ -1128,4 +1190,5 @@ module.exports = {
   verifySyncedCustomers,
   verifyInvoiceSync,
   verifyPaymentSync,
+  verifyInvoiceAgainstOdoo,
 };

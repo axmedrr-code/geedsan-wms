@@ -49,6 +49,7 @@ export default function BillingDetailPage() {
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [showPayments, setShowPayments] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(null); // 'view' | 'download' | null
+  const [odooSyncWarning, setOdooSyncWarning] = useState(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['billing-detail', id],
@@ -64,8 +65,23 @@ export default function BillingDetailPage() {
 
   const payMutation = useMutation({
     mutationFn: (d) => billingAPI.recordPayment(id, d),
-    onSuccess: () => {
-      toast.success('Payment recorded');
+    onSuccess: (res) => {
+      // The WMS-side payment always succeeds here (that's what this
+      // response represents) — but that must never be read as "and Odoo
+      // is now in sync too." odooSync reports that separately; a failed
+      // sync gets a persistent banner, not just a toast that disappears
+      // in a few seconds while the two systems quietly disagree.
+      const odooSync = res.data?.odooSync;
+      if (odooSync && !odooSync.synced) {
+        toast.error('Payment recorded in WMS, but Odoo sync failed', { duration: 8000 });
+        setOdooSyncWarning({
+          queued: odooSync.queued,
+          error: odooSync.error,
+        });
+      } else {
+        toast.success('Payment recorded and synced to Odoo');
+        setOdooSyncWarning(null);
+      }
       qc.invalidateQueries({ queryKey: ['billing-detail', id] });
       setShowPaymentForm(false);
       setPaymentData({ amount: '', method: 'cash', reference: '', note: '' });
@@ -87,6 +103,15 @@ export default function BillingDetailPage() {
     mutationFn: () => api.post(`/odoo/sync/invoice/${id}`),
     onSuccess: (r) => toast.success(`Synced to Odoo (id: ${r.data.odooId})`),
     onError: (e) => toast.error(e.response?.data?.error || 'Sync failed'),
+  });
+
+  // On-demand Total/Paid/Balance/Status comparison against Odoo — this is
+  // what actually lets someone confirm the two systems agree, rather than
+  // just trusting that a sync call earlier didn't throw.
+  const { data: odooCheck, isFetching: odooCheckLoading, refetch: runOdooCheck } = useQuery({
+    queryKey: ['billing-odoo-check', id],
+    queryFn: () => billingAPI.odooCheck(id).then(r => r.data),
+    enabled: false,
   });
 
   // Was previously a plain <a href="/api/reports/invoice-{number}.pdf">
@@ -161,6 +186,25 @@ export default function BillingDetailPage() {
   return (
     <div className="p-4 lg:p-6 space-y-6 animate-fade-in">
 
+      {/* ── Odoo sync warning ────────────────────────────────────────────── */}
+      {odooSyncWarning && (
+        <div className="card-glow border-amber-500/40 bg-amber-500/5 p-4 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-amber-300 font-medium text-sm">
+              This payment was recorded in WMS but did not sync to Odoo.
+            </p>
+            <p className="text-amber-200/70 text-xs mt-1">
+              {odooSyncWarning.queued
+                ? 'It has been queued for automatic retry — Odoo will show the correct balance once the retry succeeds.'
+                : 'It could not even be queued for retry — this needs manual attention (use "Sync Odoo" below, or check the Odoo sync queue).'}
+              {odooSyncWarning.error && <> Error: <span className="font-mono">{odooSyncWarning.error}</span></>}
+            </p>
+          </div>
+          <button onClick={() => setOdooSyncWarning(null)} className="text-amber-400/70 hover:text-amber-300 text-xs flex-shrink-0">Dismiss</button>
+        </div>
+      )}
+
       {/* ── Header ───────────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -200,6 +244,13 @@ export default function BillingDetailPage() {
             Sync Odoo
           </button>
 
+          {/* Verify vs Odoo */}
+          <button onClick={() => runOdooCheck()} disabled={odooCheckLoading}
+                  className="btn-secondary text-sm flex items-center gap-1.5">
+            {odooCheckLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+            Verify vs Odoo
+          </button>
+
           {/* Open in Odoo */}
           {invoice.odoo_id && ODOO_BASE && (
             <a href={`${ODOO_BASE}/odoo/accounting/${invoice.odoo_id}`} target="_blank" rel="noreferrer"
@@ -217,6 +268,46 @@ export default function BillingDetailPage() {
           )}
         </div>
       </div>
+
+      {/* ── Odoo comparison panel ────────────────────────────────────────── */}
+      {odooCheck && (
+        <div className={`card-glow p-5 ${odooCheck.synced && odooCheck.allMatch ? 'border-emerald-500/30' : 'border-amber-500/40'}`}>
+          <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+            {odooCheck.synced && odooCheck.allMatch
+              ? <CheckCircle className="w-4 h-4 text-emerald-400" />
+              : <AlertCircle className="w-4 h-4 text-amber-400" />}
+            WMS vs Odoo
+          </h3>
+          {!odooCheck.synced ? (
+            <p className="text-amber-300 text-sm">{odooCheck.reason || 'Not synced to Odoo yet.'}</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead><tr><th></th><th>WMS</th><th>Odoo</th><th></th></tr></thead>
+                <tbody>
+                  {[
+                    ['Total',   `$${odooCheck.wms.total.toFixed(2)}`,   `$${odooCheck.odoo.total.toFixed(2)}`,   odooCheck.matches.total],
+                    ['Paid',    `$${odooCheck.wms.paid.toFixed(2)}`,    `$${odooCheck.odoo.paid.toFixed(2)}`,    odooCheck.matches.paid],
+                    ['Balance', `$${odooCheck.wms.balance.toFixed(2)}`, `$${odooCheck.odoo.balance.toFixed(2)}`, odooCheck.matches.balance],
+                    ['Status',  odooCheck.wms.status,                  odooCheck.odoo.status,                  odooCheck.matches.status],
+                  ].map(([label, wmsVal, odooVal, matches]) => (
+                    <tr key={label}>
+                      <td className="text-slate-400 text-sm">{label}</td>
+                      <td className="text-white text-sm font-medium">{wmsVal}</td>
+                      <td className="text-white text-sm font-medium">{odooVal}</td>
+                      <td>
+                        {matches
+                          ? <CheckCircle className="w-4 h-4 text-emerald-400" />
+                          : <span className="text-xs text-red-400 font-semibold">MISMATCH</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Payment Form (collapsible) ───────────────────────────────────── */}
       {showPaymentForm && (

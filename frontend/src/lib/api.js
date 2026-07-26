@@ -105,6 +105,7 @@ export const billingAPI = {
   update:        (id, d)  => api.put(`/billing/${id}`, d),
   recordPayment: (id, d)  => api.post(`/billing/${id}/payment`, d),
   getPayments:   (id)     => api.get(`/billing/${id}/payments`),
+  odooCheck:     (id)     => api.get(`/billing/${id}/odoo-check`),
   // Real PDF generator (GET /billing/:id/pdf, keyed by invoice UUID). The
   // route requires an Authorization header, so this must be fetched through
   // the authenticated axios instance — a plain <a href> can't carry it.
