@@ -74,8 +74,8 @@ export default function CreateBillingPage() {
           issue_date: form.issue_date || new Date().toISOString().slice(0, 10),
           total_amount: Number(form.total_amount),
           line_items: [{ description: 'Meter service', quantity: 1, unit_price: Number(form.total_amount) }]
-        })} disabled={mutation.isLoading || !form.customer_id || !form.invoice_number || !form.due_date || !form.total_amount} className="btn-primary">
-          {mutation.isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} Save Invoice
+        })} disabled={mutation.isPending || !form.customer_id || !form.invoice_number || !form.due_date || !form.total_amount} className="btn-primary">
+          {mutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} Save Invoice
         </button>
       </div>
     </div>

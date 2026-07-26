@@ -308,7 +308,13 @@ router.post('/', authenticate, authorize('admin', 'operator'), async (req, res) 
     res.status(201).json({ invoice: r.rows[0] });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to create invoice' });
+    // Previously hardcoded "Failed to create invoice" regardless of cause —
+    // inconsistent with every other route in this file (and in
+    // billingReports.js), which return err.message. That masked the real
+    // exception (e.g. a duplicate invoice_number hitting the UNIQUE
+    // constraint) behind a generic string with no way to tell what
+    // actually happened without reading the server log.
+    res.status(500).json({ error: err.message || 'Failed to create invoice' });
   }
 });
 
