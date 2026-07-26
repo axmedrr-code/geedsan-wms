@@ -150,7 +150,13 @@ export default function BillingDetailPage() {
   const periodStart = periodMatch?.[1];
   const periodEnd = periodMatch?.[2];
 
-  const ODOO_BASE = process.env.NEXT_PUBLIC_ODOO_URL || 'http://localhost:8069';
+  // No localhost fallback here on purpose: this renders in the user's
+  // browser, not on the server, so a 'http://localhost:8069' fallback would
+  // silently point every visitor at their own machine instead of the real
+  // Odoo instance. NEXT_PUBLIC_ODOO_URL must be baked in at frontend build
+  // time (see docker-compose.prod.yml) — if it's missing, the button below
+  // just doesn't render rather than link somewhere broken.
+  const ODOO_BASE = process.env.NEXT_PUBLIC_ODOO_URL || null;
 
   return (
     <div className="p-4 lg:p-6 space-y-6 animate-fade-in">
@@ -195,7 +201,7 @@ export default function BillingDetailPage() {
           </button>
 
           {/* Open in Odoo */}
-          {invoice.odoo_id && (
+          {invoice.odoo_id && ODOO_BASE && (
             <a href={`${ODOO_BASE}/odoo/accounting/${invoice.odoo_id}`} target="_blank" rel="noreferrer"
                className="btn-secondary text-sm flex items-center gap-1.5">
               <ExternalLink className="w-4 h-4" /> Open in Odoo

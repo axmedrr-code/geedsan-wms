@@ -155,6 +155,10 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: http://localhost:5000
+        # Odoo dev is bound 127.0.0.1:8070->8069 — reachable from the
+        # browser via SSH tunnel/VS Code Remote-SSH port forwarding at
+        # this same address, same assumption NEXT_PUBLIC_API_URL makes.
+        NEXT_PUBLIC_ODOO_URL: http://localhost:8070
     image: nuwaco-frontend:dev
     container_name: geedsan-dev-frontend
     restart: unless-stopped

@@ -112,11 +112,17 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: http://localhost:5000
+        # Odoo is port-mapped 8069:8069 directly on this same host, so
+        # localhost is genuinely correct here (unlike the prod fallback
+        # this pattern used to have, where the browser is on a different
+        # machine than the Docker host).
+        NEXT_PUBLIC_ODOO_URL: http://localhost:8069
     container_name: geedsan-frontend
     restart: unless-stopped
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_API_URL: http://localhost:5000
+      NEXT_PUBLIC_ODOO_URL: http://localhost:8069
       HOSTNAME: 0.0.0.0
     ports:
       - "3000:3000"

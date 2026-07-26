@@ -269,6 +269,8 @@ LAST_FRONTEND_HASH=$(state_val "FRONTEND_HASH")
 LAST_NGINX_HASH=$(state_val "NGINX_HASH")
 LAST_API_URL=$(state_val "FRONTEND_API_URL")
 CURRENT_API_URL="${API_URL:-}"
+LAST_ODOO_PUBLIC_URL=$(state_val "FRONTEND_ODOO_PUBLIC_URL")
+CURRENT_ODOO_PUBLIC_URL="${ODOO_PUBLIC_URL:-}"
 
 BUILD_BACKEND=false
 BUILD_FRONTEND=false
@@ -300,6 +302,11 @@ elif [[ "$CURRENT_API_URL" != "$LAST_API_URL" ]]; then
     info "NEXT_PUBLIC_API_URL changed (baked-in at build time) — rebuild required"
     dim "Previous: ${LAST_API_URL:-<unknown>}"
     dim "Current:  $CURRENT_API_URL"
+    BUILD_FRONTEND=true
+elif [[ "$CURRENT_ODOO_PUBLIC_URL" != "$LAST_ODOO_PUBLIC_URL" ]]; then
+    info "NEXT_PUBLIC_ODOO_URL changed (baked-in at build time) — rebuild required"
+    dim "Previous: ${LAST_ODOO_PUBLIC_URL:-<unknown>}"
+    dim "Current:  $CURRENT_ODOO_PUBLIC_URL"
     BUILD_FRONTEND=true
 else
     ok "Frontend image '$FRONTEND_IMAGE' is current — skipping build"
@@ -364,6 +371,7 @@ if docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d; then
         echo "FRONTEND_HASH=${FRONTEND_SRC_HASH}"
         echo "NGINX_HASH=${NGINX_SRC_HASH}"
         echo "FRONTEND_API_URL=${CURRENT_API_URL}"
+        echo "FRONTEND_ODOO_PUBLIC_URL=${CURRENT_ODOO_PUBLIC_URL}"
         echo "DEPLOYED_COMMIT=${CURRENT_COMMIT}"
         echo "DEPLOYED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')"
     } > "$STATE_FILE"

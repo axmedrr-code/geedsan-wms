@@ -130,6 +130,10 @@ services:
         # Build-time bake — tells the Next.js app where to send API calls.
         # Must point to api.geedsan.com (not the WMS domain).
         NEXT_PUBLIC_API_URL: ${API_URL}
+        # Public Odoo URL for the "Open in Odoo" button — must be the
+        # browser-reachable subdomain, never the internal odoo:8069
+        # Docker hostname the backend's XML-RPC client uses.
+        NEXT_PUBLIC_ODOO_URL: ${ODOO_PUBLIC_URL}
     image: nuwaco-frontend:${APP_VERSION:-latest}
     container_name: geedsan-frontend
     restart: unless-stopped
