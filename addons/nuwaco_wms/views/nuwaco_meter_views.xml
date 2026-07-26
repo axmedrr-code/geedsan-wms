@@ -11,6 +11,8 @@
         <field name="device_eui"/>
         <field name="partner_id"/>
         <field name="meter_type"/>
+        <field name="water_type"/>
+        <field name="reading_mode"/>
         <field name="status"/>
         <field name="is_online" widget="boolean_toggle"/>
         <field name="valve_status"/>
@@ -50,6 +52,8 @@
             <group string="Assignment">
               <field name="partner_id"/>
               <field name="meter_type"/>
+              <field name="water_type"/>
+              <field name="reading_mode"/>
               <field name="installed_at"/>
               <field name="installation_address"/>
             </group>
@@ -112,10 +116,13 @@
         <filter name="faulty"   string="Faulty"   domain="[('status','=','faulty')]"/>
         <filter name="online"   string="Online"   domain="[('is_online','=',True)]"/>
         <filter name="offline"  string="Offline"  domain="[('is_online','=',False),('status','=','active')]"/>
+        <filter name="manual"   string="Manual"   domain="[('reading_mode','=','manual')]"/>
         <separator/>
         <group expand="0" string="Group By">
           <filter string="Customer"    name="by_customer" context="{'group_by':'partner_id'}"/>
           <filter string="Meter Type"  name="by_type"     context="{'group_by':'meter_type'}"/>
+          <filter string="Water Type"  name="by_water_type" context="{'group_by':'water_type'}"/>
+          <filter string="Reading Mode" name="by_reading_mode" context="{'group_by':'reading_mode'}"/>
           <filter string="Status"      name="by_status"   context="{'group_by':'status'}"/>
         </group>
       </search>

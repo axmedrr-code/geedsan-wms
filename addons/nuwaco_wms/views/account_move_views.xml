@@ -26,6 +26,9 @@
               <field name="wms_water_volume"/>
             </group>
           </group>
+          <group string="Water Type Breakdown">
+            <field name="wms_water_type_breakdown" nolabel="1" readonly="1"/>
+          </group>
         </page>
       </xpath>
     </field>

@@ -227,6 +227,10 @@ async function getDeviceHealth(meterId) {
 /**
  * Returns a fleet-level health summary: count by status, avg score, alert list.
  */
+// reading_mode='automatic' excludes manual/legacy meters — they have no
+// radio at all, so without this filter every one of them would count as
+// permanently "critical/offline" in fleet stats that are only meaningful
+// for LoRaWAN devices.
 async function getFleetHealth() {
   const r = await query(
     `SELECT
@@ -237,7 +241,7 @@ async function getFleetHealth() {
        COUNT(*) AS total,
        AVG(battery_voltage) FILTER (WHERE battery_voltage IS NOT NULL) AS avg_battery,
        AVG(rssi) FILTER (WHERE rssi IS NOT NULL AND is_online) AS avg_rssi
-     FROM meters WHERE status = 'active'`
+     FROM meters WHERE status = 'active' AND reading_mode = 'automatic'`
   );
   return r.rows[0];
 }

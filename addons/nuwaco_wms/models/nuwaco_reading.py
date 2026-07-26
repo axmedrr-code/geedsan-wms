@@ -29,6 +29,13 @@ class NuwacoReading(models.Model):
     current_flow      = fields.Float(string='Flow (m³/h)',            digits=(8, 3))
     battery_voltage   = fields.Float(string='Battery (V)',            digits=(4, 2))
     rssi              = fields.Integer(string='RSSI (dBm)')
+    source = fields.Selection(
+        selection=[
+            ('lorawan', 'LoRaWAN (Automatic)'),
+            ('manual',  'Manual Entry'),
+        ],
+        string='Source', default='lorawan',
+    )
 
     display_name = fields.Char(compute='_compute_display_name', store=False)
 

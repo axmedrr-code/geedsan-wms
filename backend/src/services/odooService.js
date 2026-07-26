@@ -193,7 +193,7 @@ const syncProductToOdoo = async (productId) => {
 
 // Optional second argument accepts injected deps for unit tests.
 // All production callers pass only invoiceId and rely on the defaults.
-const syncInvoiceToOdoo = async (invoiceId, { _query = query, _odoo = odoo, _syncCustomer = syncCustomerToOdoo } = {}) => {
+const syncInvoiceToOdoo = async (invoiceId, { _query = query, _odoo = odoo, _syncCustomer = syncCustomerToOdoo, _syncMeter = syncMeterToOdoo } = {}) => {
   const invoiceR = await _query('SELECT * FROM invoices WHERE id=$1', [invoiceId]);
   const invoice = invoiceR.rows[0];
   if (!invoice) throw new Error('Invoice not found');
@@ -217,6 +217,31 @@ const syncInvoiceToOdoo = async (invoiceId, { _query = query, _odoo = odoo, _syn
     price_unit: Number(item.unit_price),
   }]);
 
+  // Primary meter, synced to Odoo first so wms_meter_id (a Many2one) can
+  // reference its Odoo record — mirrors syncing the customer first for
+  // partner_id above. Best-effort: a meter sync failure shouldn't block the
+  // invoice itself from syncing, it just leaves wms_meter_id unset.
+  let meterOdooId = null;
+  if (invoice.meter_id) {
+    const meterR = await _query('SELECT odoo_id FROM meters WHERE id=$1', [invoice.meter_id]);
+    meterOdooId = meterR.rows[0]?.odoo_id ? parseInt(meterR.rows[0].odoo_id, 10) : null;
+    if (!meterOdooId) {
+      try {
+        const meterSync = await _syncMeter(invoice.meter_id, { _query, _odoo });
+        meterOdooId = meterSync.odooId;
+      } catch (meterSyncErr) {
+        logger.warn('Meter sync failed while syncing invoice — wms_meter_id left unset', { error: meterSyncErr.message, invoiceId, meterId: invoice.meter_id });
+      }
+    }
+  }
+
+  // Per-water-type breakdown, built from the invoice's own line items (which
+  // already carry a water-type label per group from buildInvoiceLineItems in
+  // billingService.js) rather than recomputing anything.
+  const waterTypeBreakdown = items
+    .map(item => `${item.description}: ${(Number(item.quantity) * Number(item.unit_price)).toFixed(2)}`)
+    .join('\n');
+
   // Idempotency search: find any existing move with this WMS invoice number as the Odoo ref.
   // This prevents duplicate account.move records when retrying after partial failures.
   const found = await _odoo.execute('account.move', 'search_read',
@@ -227,6 +252,9 @@ const syncInvoiceToOdoo = async (invoiceId, { _query = query, _odoo = odoo, _syn
   let moveId, branch;
 
   // Base move payload — extracted so it can be included in the return value.
+  // wms_invoice_id/wms_invoice_number/wms_meter_id/wms_period_start/
+  // wms_period_end/wms_water_volume were previously never set here despite
+  // account_move.py declaring all of them — populated now.
   const movePayload = {
     move_type:        'out_invoice',
     partner_id:       customerSync.odooId,
@@ -234,6 +262,13 @@ const syncInvoiceToOdoo = async (invoiceId, { _query = query, _odoo = odoo, _syn
     invoice_date_due: toOdooDate(invoice.due_date),
     ref:              invoice.invoice_number,
     invoice_line_ids: linePayload,
+    wms_invoice_id:           invoice.id,
+    wms_invoice_number:       invoice.invoice_number,
+    wms_meter_id:             meterOdooId || false,
+    wms_period_start:         toOdooDate(invoice.billing_period_start),
+    wms_period_end:           toOdooDate(invoice.billing_period_end),
+    wms_water_volume:         Number(invoice.consumption_m3 || 0),
+    wms_water_type_breakdown: waterTypeBreakdown || false,
   };
 
   if (found.length === 0) {
@@ -249,6 +284,13 @@ const syncInvoiceToOdoo = async (invoiceId, { _query = query, _odoo = odoo, _syn
       invoice_date:     toOdooDate(invoice.issue_date),
       invoice_date_due: toOdooDate(invoice.due_date),
       invoice_line_ids: [[5, 0, 0], ...linePayload],  // ORM cmd 5: delete all lines before re-adding
+      wms_invoice_id:           invoice.id,
+      wms_invoice_number:       invoice.invoice_number,
+      wms_meter_id:             meterOdooId || false,
+      wms_period_start:         toOdooDate(invoice.billing_period_start),
+      wms_period_end:           toOdooDate(invoice.billing_period_end),
+      wms_water_volume:         Number(invoice.consumption_m3 || 0),
+      wms_water_type_breakdown: waterTypeBreakdown || false,
     }]);
   } else {
     // Branch C: HIT Posted — move is already confirmed in Odoo; do not touch it
@@ -328,9 +370,10 @@ const toOdooDate = (v) => {
 // All production callers pass only meterId and rely on the defaults.
 const syncMeterToOdoo = async (meterId, { _query = query, _odoo = odoo, _syncCustomer = syncCustomerToOdoo } = {}) => {
   const meterR = await _query(`
-    SELECT m.*, c.odoo_id AS customer_odoo_id
+    SELECT m.*, c.odoo_id AS customer_odoo_id, c.tariff_type AS customer_tariff_type, wt.code AS water_type
     FROM meters m
     LEFT JOIN customers c ON c.id = m.customer_id
+    LEFT JOIN water_types wt ON wt.id = m.water_type_id
     WHERE m.id = $1`, [meterId]);
   const meter = meterR.rows[0];
   if (!meter) throw new Error('Meter not found');
@@ -349,7 +392,12 @@ const syncMeterToOdoo = async (meterId, { _query = query, _odoo = odoo, _syncCus
     device_eui: meter.device_eui || false,
     meter_serial: meter.meter_serial || false,
     partner_id: partnerId || false,
-    meter_type: meter.tariff_type || 'residential',
+    // Real, pre-existing bug fixed here: meters has never had a tariff_type
+    // column (only customers does) — this always silently defaulted every
+    // meter to 'residential' in Odoo regardless of its real category.
+    meter_type: meter.customer_tariff_type || 'residential',
+    water_type: meter.water_type || false,
+    reading_mode: meter.reading_mode || 'automatic',
     status: meter.status || 'active',
     total_consumption: Number(meter.total_consumption || 0),
     current_flow: Number(meter.current_flow || 0),
@@ -411,6 +459,7 @@ const syncReadingToOdoo = async (readingId, { _query = query, _odoo = odoo, _syn
     current_flow: Number(reading.current_flow || 0),
     battery_voltage: reading.battery_voltage ? Number(reading.battery_voltage) : false,
     rssi: reading.rssi ? Number(reading.rssi) : false,
+    source: reading.source || 'lorawan',
   };
 
   // Safety-net idempotency: search Odoo by wms_reading_id before creating.

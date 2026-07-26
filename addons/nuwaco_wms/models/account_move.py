@@ -22,3 +22,7 @@ class AccountMove(models.Model):
     wms_period_start = fields.Date(string='Billing Period Start')
     wms_period_end   = fields.Date(string='Billing Period End')
     wms_water_volume = fields.Float(string='Water Volume (m³)', digits=(12, 3))
+    wms_water_type_breakdown = fields.Text(
+        string='Water Type Breakdown',
+        help='Per water-type line item summary (description: amount), one per billed water type — a customer can be billed for multiple water types on a single invoice.',
+    )

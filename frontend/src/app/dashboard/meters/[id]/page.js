@@ -9,7 +9,7 @@ import {
   AlertTriangle, CheckCircle, RefreshCw,
   Activity, Brain, Lock, Unlock, RotateCcw,
   Loader2, Info, FlaskConical, Radio, Inbox,
-  TrendingUp, TrendingDown, Minus, ShieldAlert, Zap
+  TrendingUp, TrendingDown, Minus, ShieldAlert, Zap, PenLine
 } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line, XAxis, YAxis,
@@ -352,6 +352,23 @@ export default function MeterDetailPage() {
 
       {activeTab === 'readings' && (
         <div className="space-y-6">
+          <div className="flex items-center justify-between gap-3">
+            <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-medium ${
+              meter.reading_mode === 'manual'
+                ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+            }`}>
+              {meter.reading_mode === 'manual' ? <PenLine className="w-3 h-3" /> : <Radio className="w-3 h-3" />}
+              {meter.reading_mode === 'manual' ? 'Manual meter' : 'Automatic (LoRaWAN) meter'}
+            </span>
+            <Link
+              href={`/dashboard/billing/readings?meter_id=${meter.id}`}
+              className="btn-secondary text-xs flex items-center gap-1.5"
+            >
+              <PenLine className="w-3.5 h-3.5" /> Enter Manual Reading
+            </Link>
+          </div>
+
           <div className="card-glow p-5">
             <h3 className="font-semibold text-white mb-4">Daily Consumption</h3>
             <ResponsiveContainer width="100%" height={220}>
@@ -848,8 +865,10 @@ function DeviceInfoCard({ meter }) {
       <h3 className="font-semibold text-white mb-4">Device Information</h3>
       <div className="space-y-3">
         {[
-          { label: 'Device EUI', value: meter.device_eui, mono: true },
+          { label: 'Device EUI', value: meter.device_eui || '—', mono: true },
           { label: 'Meter Number', value: meter.meter_number },
+          { label: 'Reading Mode', value: meter.reading_mode === 'manual' ? 'Manual (Legacy)' : 'Automatic (Smart)' },
+          { label: 'Water Type', value: meter.water_type || 'Unclassified' },
           { label: 'Customer', value: meter.customer_name || '—' },
           { label: 'Phone', value: meter.customer_phone || '—' },
           { label: 'Status', value: meter.status },

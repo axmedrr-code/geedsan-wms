@@ -269,18 +269,33 @@ router.get('/:id/payments', authenticate, authorize('admin', 'operator'), async 
   }
 });
 
+// This route (the free-form manual-amount path — "Adjustment Invoice" in
+// the UI) is reserved for exceptional, non-consumption charges. Normal
+// monthly water billing must always go through the reading-driven path
+// (generateInvoiceForCustomer/Zone/Selected, billingService.js) —
+// adjustment_reason is required here specifically so every invoice created
+// through this shortcut is traceable to why it bypassed metered billing.
+const ADJUSTMENT_REASONS = [
+  'meter_correction', 'billing_adjustment', 'penalty', 'credit_note',
+  'misc_service_charge', 'new_connection_fee', 'reconnection_fee',
+  'meter_replacement_fee', 'administrative_charge',
+];
+
 router.post('/', authenticate, authorize('admin', 'operator'), async (req, res) => {
   try {
-    const { customer_id, invoice_number, issue_date, due_date, tariff_type, line_items, notes, status = 'pending' } = req.body;
+    const { customer_id, invoice_number, issue_date, due_date, tariff_type, line_items, notes, status = 'pending', adjustment_reason } = req.body;
     if (!customer_id || !invoice_number || !issue_date || !due_date || !Array.isArray(line_items) || !line_items.length) {
       return res.status(400).json({ error: 'Missing invoice fields' });
+    }
+    if (!adjustment_reason || !ADJUSTMENT_REASONS.includes(adjustment_reason)) {
+      return res.status(400).json({ error: `adjustment_reason is required and must be one of: ${ADJUSTMENT_REASONS.join(', ')}` });
     }
 
     const total_amount = line_items.reduce((sum, item) => sum + parseFloat(item.unit_price || 0) * parseFloat(item.quantity || 0), 0);
     const r = await query(
-      `INSERT INTO invoices (customer_id,invoice_number,issue_date,due_date,tariff_type,total_amount,status,notes,created_by,created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW()) RETURNING *`,
-      [customer_id, invoice_number, issue_date, due_date, tariff_type, total_amount, status, notes, req.user.id]
+      `INSERT INTO invoices (customer_id,invoice_number,issue_date,due_date,tariff_type,total_amount,status,notes,created_by,adjustment_reason,reading_source,created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'adjustment',NOW()) RETURNING *`,
+      [customer_id, invoice_number, issue_date, due_date, tariff_type, total_amount, status, notes, req.user.id, adjustment_reason]
     );
     const invoiceId = r.rows[0].id;
 
@@ -294,7 +309,7 @@ router.post('/', authenticate, authorize('admin', 'operator'), async (req, res) 
 
     await query(
       'INSERT INTO audit_log (user_id, action, entity_type, entity_id, new_values, ip_address, user_agent) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-      [req.user.id, 'create_invoice', 'invoice', invoiceId, JSON.stringify({ customer_id, invoice_number, issue_date, due_date, tariff_type, total_amount, status, notes }), req.ip, req.headers['user-agent'] || null]
+      [req.user.id, 'create_invoice', 'invoice', invoiceId, JSON.stringify({ customer_id, invoice_number, issue_date, due_date, tariff_type, total_amount, status, notes, adjustment_reason }), req.ip, req.headers['user-agent'] || null]
     );
 
     // Sync to Odoo immediately; fall back to retry queue if Odoo is unreachable

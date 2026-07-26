@@ -35,8 +35,9 @@ router.get('/', authenticate, async (req, res) => {
     const offset = (parseInt(page) - 1) * parseInt(limit);
     params.push(parseInt(limit), offset);
     const r = await query(
-      `SELECT mr.*, m.meter_number, m.customer_id FROM meter_readings mr
+      `SELECT mr.*, m.meter_number, m.customer_id, wt.code AS water_type FROM meter_readings mr
        JOIN meters m ON m.id = mr.meter_id
+       LEFT JOIN water_types wt ON wt.id = m.water_type_id
        WHERE ${where} ORDER BY mr.timestamp DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );

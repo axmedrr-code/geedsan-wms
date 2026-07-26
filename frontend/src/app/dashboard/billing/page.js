@@ -2,11 +2,12 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { billingAPI, tariffsAPI } from '../../../lib/api';
+import { billingAPI, tariffsAPI, customersAPI } from '../../../lib/api';
 import {
   FileText, Plus, ArrowRight, Search, Loader2, Play, Eye, History,
   Settings, CheckCircle, AlertTriangle, XCircle, ChevronDown, ChevronRight,
   RefreshCw, Ban, Send, Zap, DollarSign, Save, Percent,
+  CreditCard, Droplet, Tag, Gauge, ExternalLink,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -52,13 +53,20 @@ const Stat = ({ label, value, sub, accent }) => (
 
 // ── Tab config ────────────────────────────────────────────────────────────────
 
+// Tabs with an `href` navigate to their own standalone page (they're full
+// CRUD screens, not worth cramming inline); tabs without one render inline
+// below via the activeTab switch, same as before.
 const TABS = [
-  { id: 'invoices', label: 'Invoices',    icon: FileText  },
-  { id: 'preview',  label: 'Preview',     icon: Eye       },
-  { id: 'run',      label: 'Run Billing', icon: Play      },
-  { id: 'history',  label: 'History',     icon: History   },
-  { id: 'tariffs',  label: 'Tariffs',     icon: DollarSign},
-  { id: 'settings', label: 'Settings',    icon: Settings  },
+  { id: 'invoices',    label: 'Invoices',    icon: FileText   },
+  { id: 'preview',     label: 'Preview',     icon: Eye        },
+  { id: 'run',         label: 'Run Billing', icon: Play       },
+  { id: 'history',     label: 'History',     icon: History    },
+  { id: 'tariffs',     label: 'Tariffs',     icon: DollarSign },
+  { id: 'water-types', label: 'Water Types', icon: Droplet, href: '/dashboard/billing/water-types' },
+  { id: 'customer-categories', label: 'Categories', icon: Tag, href: '/dashboard/billing/customer-categories' },
+  { id: 'readings',    label: 'Readings',    icon: Gauge, href: '/dashboard/billing/readings' },
+  { id: 'payments',    label: 'Payments',    icon: CreditCard },
+  { id: 'settings',    label: 'Settings',    icon: Settings   },
 ];
 
 // ── Invoices tab ──────────────────────────────────────────────────────────────
@@ -78,8 +86,8 @@ function InvoicesTab() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
           <input className="input pl-9 w-full" placeholder="Search invoices…" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <Link href="/dashboard/billing/create" className="btn-primary text-sm flex items-center gap-2 flex-shrink-0">
-          <Plus className="w-4 h-4" /> New Invoice
+        <Link href="/dashboard/billing/create" className="btn-primary text-sm flex items-center gap-2 flex-shrink-0" title="For exceptional, non-consumption charges only — normal billing runs through Preview / Run Billing">
+          <Plus className="w-4 h-4" /> Adjustment Invoice
         </Link>
       </div>
       <div className="card-glow overflow-hidden">
@@ -642,7 +650,7 @@ function SettingsTab() {
 
 function TariffsTab() {
   const queryClient = useQueryClient();
-  const [editing, setEditing] = useState(null); // tariff_code being edited
+  const [editing, setEditing] = useState(null); // tariff row id being edited
   const [form, setForm] = useState({});
 
   const { data: tariffs = [], isLoading } = useQuery({
@@ -651,7 +659,7 @@ function TariffsTab() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ code, data }) => tariffsAPI.update(code, data),
+    mutationFn: ({ id, data }) => tariffsAPI.update(id, data),
     onSuccess: () => {
       toast.success('Tariff updated');
       queryClient.invalidateQueries(['tariffs']);
@@ -660,7 +668,7 @@ function TariffsTab() {
     onError: e => toast.error(e.response?.data?.error || 'Update failed'),
   });
 
-  const startEdit = (t) => { setEditing(t.tariff_code); setForm({ ...t }); };
+  const startEdit = (t) => { setEditing(t.id); setForm({ ...t }); };
   const field = (k) => ({ value: form[k] ?? '', onChange: e => setForm(f => ({ ...f, [k]: e.target.value })) });
   const numInput = (k, label) => (
     <div>
@@ -676,12 +684,12 @@ function TariffsTab() {
       <p className="text-sm text-slate-400">Configure tariff rates for each customer category. Changes apply to new invoices only.</p>
       <div className="grid gap-4">
         {tariffs.map(t => (
-          <div key={t.tariff_code} className="card-glow p-5">
-            {editing === t.tariff_code ? (
+          <div key={t.id || t.tariff_code} className="card-glow p-5">
+            {editing === t.id ? (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="font-semibold text-white capitalize">{t.name || t.tariff_code}</h3>
-                  <span className="text-xs text-slate-500 font-mono">{t.tariff_code}</span>
+                  <span className="text-xs text-slate-500 font-mono">{t.tariff_code}{t.water_type ? ` · ${t.water_type}` : ''}</span>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                   {numInput('min_charge',    'Min Charge ($)')}
@@ -693,7 +701,7 @@ function TariffsTab() {
                 </div>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => updateMutation.mutate({ code: t.tariff_code, data: { min_charge: Number(form.min_charge), price_per_m3: Number(form.price_per_m3), service_fee: Number(form.service_fee), vat_rate: Number(form.vat_rate), penalty_rate: Number(form.penalty_rate), discount_rate: Number(form.discount_rate) } })}
+                    onClick={() => updateMutation.mutate({ id: t.id, data: { min_charge: Number(form.min_charge), price_per_m3: Number(form.price_per_m3), service_fee: Number(form.service_fee), vat_rate: Number(form.vat_rate), penalty_rate: Number(form.penalty_rate), discount_rate: Number(form.discount_rate) } })}
                     disabled={updateMutation.isPending}
                     className="btn-primary text-sm flex items-center gap-2"
                   >
@@ -709,6 +717,9 @@ function TariffsTab() {
                   <div className="flex items-center gap-3 mb-2">
                     <h3 className="font-semibold text-white capitalize">{t.name || t.tariff_code}</h3>
                     <span className="text-xs font-mono text-slate-500 bg-slate-800 px-2 py-0.5 rounded">{t.tariff_code}</span>
+                    {t.water_type
+                      ? <span className="text-xs font-mono text-primary-400 bg-primary-500/10 px-2 py-0.5 rounded">{t.water_type}</span>
+                      : <span className="text-xs text-slate-500 bg-slate-800/60 px-2 py-0.5 rounded">generic</span>}
                     {!t.is_active && <span className="text-xs text-red-400 bg-red-500/10 px-2 py-0.5 rounded">Inactive</span>}
                   </div>
                   <div className="grid grid-cols-3 md:grid-cols-6 gap-x-6 gap-y-1 text-sm">
@@ -732,6 +743,101 @@ function TariffsTab() {
   );
 }
 
+// ── Payments tab ──────────────────────────────────────────────────────────────
+// Read-only: shows payments for one selected customer/invoice so staff can
+// glance at what's been paid while working in Billing Center. Recording a
+// payment, receipts, refunds, reconciliation, and Odoo payment sync all stay
+// exclusively on the standalone Payments page — this tab never duplicates
+// that write surface, only links out to it.
+
+function PaymentsTab() {
+  const [customerId, setCustomerId] = useState('');
+  const [invoiceId, setInvoiceId]   = useState('');
+
+  const { data: customerData } = useQuery({
+    queryKey: ['customers-list-payments-tab'],
+    queryFn: () => customersAPI.list({ limit: 200 }).then(r => r.data),
+  });
+  const customers = customerData?.data || [];
+
+  const { data: invoiceData, isLoading: invoicesLoading } = useQuery({
+    queryKey: ['billing-list-for-customer', customerId],
+    queryFn: () => billingAPI.list({ customer_id: customerId, limit: 100 }).then(r => r.data),
+    enabled: !!customerId,
+  });
+  const invoices = invoiceData?.data || [];
+
+  const { data: payments, isLoading: paymentsLoading } = useQuery({
+    queryKey: ['billing-payments-for-invoice', invoiceId],
+    queryFn: () => billingAPI.getPayments(invoiceId).then(r => r.data),
+    enabled: !!invoiceId,
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="card-glow p-4 flex flex-wrap items-end justify-between gap-4">
+        <div className="flex flex-wrap gap-4">
+          <div>
+            <label className="block text-xs text-slate-400 mb-1">Customer</label>
+            <select className="select" value={customerId} onChange={e => { setCustomerId(e.target.value); setInvoiceId(''); }}>
+              <option value="">Select a customer</option>
+              {customers.map(c => (
+                <option key={c.id} value={c.id}>{c.customer_number} — {c.full_name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-slate-400 mb-1">Invoice</label>
+            <select className="select" value={invoiceId} onChange={e => setInvoiceId(e.target.value)} disabled={!customerId || invoicesLoading}>
+              <option value="">{customerId ? 'Select an invoice' : 'Select a customer first'}</option>
+              {invoices.map(inv => (
+                <option key={inv.id} value={inv.id}>{inv.invoice_number} — {fmt.usd(inv.total_amount)} ({inv.status})</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <Link href="/dashboard/payments" className="btn-secondary text-sm flex items-center gap-2 flex-shrink-0">
+          <ExternalLink className="w-4 h-4" /> Open Payments
+        </Link>
+      </div>
+
+      <div className="card-glow overflow-hidden">
+        {!invoiceId ? (
+          <div className="text-center py-16 text-slate-500">
+            <CreditCard className="w-10 h-10 mx-auto mb-3 opacity-25" />
+            <p className="font-medium">Select a customer and invoice to view its payment history</p>
+            <p className="text-xs mt-1">To record a new payment, refund, or reconcile with Odoo, use the standalone Payments page.</p>
+          </div>
+        ) : paymentsLoading ? (
+          <div className="flex items-center justify-center p-12"><Loader2 className="w-6 h-6 text-primary-400 animate-spin" /></div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="data-table">
+              <thead>
+                <tr><th>Date</th><th>Amount</th><th>Method</th><th>Reference</th><th>Recorded By</th></tr>
+              </thead>
+              <tbody>
+                {!payments?.length
+                  ? <tr><td colSpan={5} className="text-center py-12 text-slate-500">No payments recorded for this invoice</td></tr>
+                  : payments.map(p => (
+                    <tr key={p.id}>
+                      <td className="text-slate-300 text-sm">{fmt.date(p.payment_date)}</td>
+                      <td className="font-medium text-white">{fmt.usd(p.amount)}</td>
+                      <td className="text-slate-400 text-sm capitalize">{p.method || '—'}</td>
+                      <td className="text-slate-400 text-sm">{p.reference || '—'}</td>
+                      <td className="text-slate-400 text-sm">{p.created_by_name || '—'}</td>
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Billing Center root ───────────────────────────────────────────────────────
 
 export default function BillingCenterPage() {
@@ -749,16 +855,18 @@ export default function BillingCenterPage() {
         {TABS.map(tab => {
           const Icon   = tab.icon;
           const active = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
-                active
-                  ? 'border-primary-500 text-primary-400'
-                  : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
-              }`}
-            >
+          const cls = `flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
+            active
+              ? 'border-primary-500 text-primary-400'
+              : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
+          }`;
+          return tab.href ? (
+            <Link key={tab.id} href={tab.href} className={cls}>
+              <Icon className="w-3.5 h-3.5" />
+              {tab.label}
+            </Link>
+          ) : (
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={cls}>
               <Icon className="w-3.5 h-3.5" />
               {tab.label}
             </button>
@@ -772,6 +880,7 @@ export default function BillingCenterPage() {
         {activeTab === 'run'      && <RunBillingTab />}
         {activeTab === 'history'  && <HistoryTab />}
         {activeTab === 'tariffs'  && <TariffsTab />}
+        {activeTab === 'payments' && <PaymentsTab />}
         {activeTab === 'settings' && <SettingsTab />}
       </div>
     </div>

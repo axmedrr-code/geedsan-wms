@@ -35,6 +35,18 @@ class NuwacoMeter(models.Model):
         ],
         string='Meter Type', default='residential', tracking=True,
     )
+    # Free-text water-type code (e.g. 'raw', 'distilled') rather than a fixed
+    # Selection — WMS's water_types table is operator-extensible, so this
+    # mirrors that instead of hardcoding a closed list here.
+    water_type = fields.Char(string='Water Type', tracking=True)
+    reading_mode = fields.Selection(
+        selection=[
+            ('automatic', 'Automatic (Smart/LoRaWAN)'),
+            ('manual',    'Manual (Legacy)'),
+        ],
+        string='Reading Mode', default='automatic', tracking=True,
+        help='Whether this meter reports readings automatically over LoRaWAN, or requires a human to walk out and read the dial.',
+    )
     status = fields.Selection(
         selection=[
             ('active',   'Active'),

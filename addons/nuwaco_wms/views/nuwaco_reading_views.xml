@@ -13,6 +13,7 @@
         <field name="current_flow"      string="Flow (m³/h)"/>
         <field name="battery_voltage"   string="Battery (V)"/>
         <field name="rssi"/>
+        <field name="source"/>
       </list>
     </field>
   </record>
@@ -35,6 +36,7 @@
               <field name="current_flow"/>
               <field name="battery_voltage"/>
               <field name="rssi"/>
+              <field name="source"/>
             </group>
           </group>
         </sheet>
@@ -54,6 +56,7 @@
           <filter string="Meter"    name="by_meter"    context="{'group_by':'meter_id'}"/>
           <filter string="Customer" name="by_customer" context="{'group_by':'partner_id'}"/>
           <filter string="Day"      name="by_day"      context="{'group_by':'timestamp:day'}"/>
+          <filter string="Source"   name="by_source"   context="{'group_by':'source'}"/>
         </group>
       </search>
     </field>

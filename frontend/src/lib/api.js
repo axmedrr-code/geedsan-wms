@@ -128,10 +128,31 @@ export const billingAPI = {
 };
 
 export const tariffsAPI = {
-  list:   ()          => api.get('/tariffs'),
+  list:   (p)         => api.get('/tariffs', { params: p }),
   get:    (code)      => api.get(`/tariffs/${code}`),
   create: (d)         => api.post('/tariffs', d),
-  update: (code, d)   => api.put(`/tariffs/${code}`, d),
+  // id-based, not code-based — tariff_code alone stopped being a unique
+  // row identifier once water_type became a second dimension.
+  update: (id, d)     => api.put(`/tariffs/${id}`, d),
+};
+
+export const waterTypesAPI = {
+  list:   (p)     => api.get('/water-types', { params: p }),
+  get:    (id)    => api.get(`/water-types/${id}`),
+  create: (d)     => api.post('/water-types', d),
+  update: (id, d) => api.put(`/water-types/${id}`, d),
+};
+
+export const customerCategoriesAPI = {
+  list:   (p)     => api.get('/customer-categories', { params: p }),
+  get:    (id)    => api.get(`/customer-categories/${id}`),
+  create: (d)     => api.post('/customer-categories', d),
+  update: (id, d) => api.put(`/customer-categories/${id}`, d),
+};
+
+export const meterReadingsAPI = {
+  list:   (p) => api.get('/meter-readings', { params: p }),
+  create: (d) => api.post('/meter-readings', d),
 };
 
 export const billingReportsAPI = {

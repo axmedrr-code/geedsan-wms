@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { metersAPI, customersAPI } from '../../../../lib/api';
+import { metersAPI, customersAPI, waterTypesAPI } from '../../../../lib/api';
 import { Plus, Loader2, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
@@ -11,10 +11,11 @@ export default function AddMeterPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [form, setForm] = useState({
-    device_eui: '', meter_number: '', customer_id: '', application_id: '', latitude: '', longitude: '', installation_address: '', firmware_version: '', notes: ''
+    device_eui: '', meter_number: '', customer_id: '', application_id: '', latitude: '', longitude: '', installation_address: '', firmware_version: '', notes: '', water_type_id: '', reading_mode: 'automatic'
   });
 
   const { data: customers } = useQuery({ queryKey: ['customers', 'combo'], queryFn: () => customersAPI.list({ limit: 200 }).then(r => r.data.data) });
+  const { data: waterTypes } = useQuery({ queryKey: ['water-types', 'combo'], queryFn: () => waterTypesAPI.list({ active: true }).then(r => r.data) });
 
   const mutation = useMutation({
     mutationFn: (payload) => metersAPI.create(payload),
@@ -37,8 +38,23 @@ export default function AddMeterPage() {
       </div>
 
       <div className="card-glow p-6 grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div>
+          <label className="block text-xs text-slate-400 mb-1 font-medium">Reading Mode</label>
+          <select className="select" value={form.reading_mode} onChange={e => setForm({ ...form, reading_mode: e.target.value })}>
+            <option value="automatic">Automatic (Smart/LoRaWAN)</option>
+            <option value="manual">Manual (Legacy — no radio)</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-slate-400 mb-1 font-medium">Water Type</label>
+          <select className="select" value={form.water_type_id} onChange={e => setForm({ ...form, water_type_id: e.target.value })}>
+            <option value="">Unclassified (generic tariff rate)</option>
+            {waterTypes?.map(wt => <option key={wt.id} value={wt.id}>{wt.name}</option>)}
+          </select>
+        </div>
+
         {[
-          { label: 'Device EUI', key: 'device_eui' },
+          { label: `Device EUI${form.reading_mode === 'manual' ? ' (optional — no radio)' : ''}`, key: 'device_eui' },
           { label: 'Meter Number', key: 'meter_number' },
           { label: 'Customer', key: 'customer_id', type: 'select' },
           { label: 'Application ID', key: 'application_id' },

@@ -13,14 +13,14 @@ router.get('/', authenticate, async (req, res) => {
     if(search){conditions.push(`(m.device_eui ILIKE $${pi} OR m.meter_number ILIKE $${pi} OR c.full_name ILIKE $${pi})`);params.push(`%${search}%`);pi++;}
     const where=conditions.join(' AND ');
     const countR=await query(`SELECT COUNT(*) FROM meters m LEFT JOIN customers c ON m.customer_id=c.id WHERE ${where}`,params);
-    const r=await query(`SELECT m.*,c.full_name AS customer_name,c.house_number,(SELECT COUNT(*) FROM alarms a WHERE a.meter_id=m.id AND a.status='active') AS active_alarms FROM meters m LEFT JOIN customers c ON m.customer_id=c.id WHERE ${where} ORDER BY m.last_seen DESC NULLS LAST,m.meter_number ASC LIMIT $${pi} OFFSET $${pi+1}`,[...params,limit,offset]);
+    const r=await query(`SELECT m.*,c.full_name AS customer_name,c.house_number,wt.code AS water_type,(SELECT COUNT(*) FROM alarms a WHERE a.meter_id=m.id AND a.status='active') AS active_alarms FROM meters m LEFT JOIN customers c ON m.customer_id=c.id LEFT JOIN water_types wt ON wt.id=m.water_type_id WHERE ${where} ORDER BY m.last_seen DESC NULLS LAST,m.meter_number ASC LIMIT $${pi} OFFSET $${pi+1}`,[...params,limit,offset]);
     res.json({data:r.rows,pagination:{total:parseInt(countR.rows[0].count),page:parseInt(page),limit:parseInt(limit),pages:Math.ceil(countR.rows[0].count/limit)}});
   } catch(err){res.status(500).json({error:'Failed to fetch meters'});}
 });
 
 router.get('/:id', authenticate, async (req, res) => {
   try {
-    const r=await query(`SELECT m.*,c.full_name AS customer_name,c.house_number,c.phone AS customer_phone,c.email AS customer_email FROM meters m LEFT JOIN customers c ON m.customer_id=c.id WHERE m.id::text=$1 OR m.device_eui=$1`,[req.params.id]);
+    const r=await query(`SELECT m.*,c.full_name AS customer_name,c.house_number,c.phone AS customer_phone,c.email AS customer_email,wt.code AS water_type FROM meters m LEFT JOIN customers c ON m.customer_id=c.id LEFT JOIN water_types wt ON wt.id=m.water_type_id WHERE m.id::text=$1 OR m.device_eui=$1`,[req.params.id]);
     if(!r.rows[0]) return res.status(404).json({error:'Meter not found'});
     const meter=r.rows[0];
     const [readings,alarms,commands]=await Promise.all([
@@ -34,9 +34,13 @@ router.get('/:id', authenticate, async (req, res) => {
 
 router.post('/', authenticate, authorize('admin','operator'), async (req,res) => {
   try {
-    const {device_eui,meter_number,customer_id,application_id,latitude,longitude,installation_address,firmware_version,notes,serial_number,zone_id}=req.body;
-    if(!device_eui||!meter_number) return res.status(400).json({error:'Device EUI and meter number required'});
-    const r=await query(`INSERT INTO meters(device_eui,meter_number,customer_id,application_id,latitude,longitude,installation_address,firmware_version,notes,serial_number,zone_id,installed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW()) RETURNING *`,[device_eui.toUpperCase(),meter_number,customer_id,application_id,latitude,longitude,installation_address,firmware_version,notes,serial_number||null,zone_id||null]);
+    const {device_eui,meter_number,customer_id,application_id,latitude,longitude,installation_address,firmware_version,notes,serial_number,zone_id,water_type_id,reading_mode}=req.body;
+    const mode = reading_mode === 'manual' ? 'manual' : 'automatic';
+    // A manual/legacy meter has no LoRaWAN radio and therefore no EUI —
+    // only automatic meters require one (matches the DB CHECK constraint
+    // added in migration 036).
+    if(!meter_number||(mode==='automatic'&&!device_eui)) return res.status(400).json({error: mode==='automatic' ? 'Device EUI and meter number required' : 'Meter number required'});
+    const r=await query(`INSERT INTO meters(device_eui,meter_number,customer_id,application_id,latitude,longitude,installation_address,firmware_version,notes,serial_number,zone_id,water_type_id,reading_mode,installed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW()) RETURNING *`,[device_eui?device_eui.toUpperCase():null,meter_number,customer_id,application_id,latitude,longitude,installation_address,firmware_version,notes,serial_number||null,zone_id||null,water_type_id||null,mode]);
     res.status(201).json(r.rows[0]);
   } catch(err){
     if(err.code==='23505') return res.status(409).json({error:'Device EUI or meter number already exists'});
@@ -46,8 +50,8 @@ router.post('/', authenticate, authorize('admin','operator'), async (req,res) =>
 
 router.put('/:id', authenticate, authorize('admin','operator'), async (req,res) => {
   try {
-    const {meter_number,customer_id,application_id,latitude,longitude,installation_address,firmware_version,notes,status,serial_number,zone_id}=req.body;
-    const r=await query(`UPDATE meters SET meter_number=COALESCE($1,meter_number),customer_id=COALESCE($2,customer_id),application_id=COALESCE($3,application_id),latitude=COALESCE($4,latitude),longitude=COALESCE($5,longitude),installation_address=COALESCE($6,installation_address),firmware_version=COALESCE($7,firmware_version),notes=COALESCE($8,notes),status=COALESCE($9,status),serial_number=COALESCE($10,serial_number),zone_id=COALESCE($11,zone_id),updated_at=NOW() WHERE id=$12 RETURNING *`,[meter_number,customer_id,application_id,latitude,longitude,installation_address,firmware_version,notes,status,serial_number||null,zone_id||null,req.params.id]);
+    const {meter_number,customer_id,application_id,latitude,longitude,installation_address,firmware_version,notes,status,serial_number,zone_id,water_type_id,reading_mode}=req.body;
+    const r=await query(`UPDATE meters SET meter_number=COALESCE($1,meter_number),customer_id=COALESCE($2,customer_id),application_id=COALESCE($3,application_id),latitude=COALESCE($4,latitude),longitude=COALESCE($5,longitude),installation_address=COALESCE($6,installation_address),firmware_version=COALESCE($7,firmware_version),notes=COALESCE($8,notes),status=COALESCE($9,status),serial_number=COALESCE($10,serial_number),zone_id=COALESCE($11,zone_id),water_type_id=COALESCE($12,water_type_id),reading_mode=COALESCE($13,reading_mode),updated_at=NOW() WHERE id=$14 RETURNING *`,[meter_number,customer_id,application_id,latitude,longitude,installation_address,firmware_version,notes,status,serial_number||null,zone_id||null,water_type_id||null,reading_mode||null,req.params.id]);
     if(!r.rows[0]) return res.status(404).json({error:'Meter not found'});
     res.json(r.rows[0]);
   } catch(err){res.status(500).json({error:'Failed to update meter'});}
@@ -62,10 +66,15 @@ router.delete('/:id', authenticate, authorize('admin'), async (req,res) => {
 // POST /meters/:id/replace — Replace Meter workflow
 // Marks old meter as 'replaced', creates new meter as 'active', links them.
 router.post('/:id/replace', authenticate, authorize('admin', 'operator'), async (req, res) => {
-  const { new_meter_number, new_device_eui, new_serial_number, replacement_reason } = req.body;
+  const { new_meter_number, new_device_eui, new_serial_number, replacement_reason, new_water_type_id, new_reading_mode } = req.body;
+  // Defaults to 'automatic' explicitly, never inherited from the old meter —
+  // the whole point of replace-with-upgrade (legacy manual meter swapped for
+  // a smart one) is that the new meter is automatic even though the old one
+  // wasn't.
+  const mode = new_reading_mode === 'manual' ? 'manual' : 'automatic';
 
-  if (!new_meter_number?.trim() || !new_device_eui?.trim()) {
-    return res.status(400).json({ error: 'new_meter_number and new_device_eui are required' });
+  if (!new_meter_number?.trim() || (mode === 'automatic' && !new_device_eui?.trim())) {
+    return res.status(400).json({ error: mode === 'automatic' ? 'new_meter_number and new_device_eui are required' : 'new_meter_number is required' });
   }
 
   const client = await getClient();
@@ -83,11 +92,11 @@ router.post('/:id/replace', authenticate, authorize('admin', 'operator'), async 
     const newMeter = await client.query(`
       INSERT INTO meters
         (device_eui, meter_number, customer_id, serial_number, zone_id,
-         installation_address, application_id, replacement_reason, installed_at, status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),'active')
+         installation_address, application_id, replacement_reason, water_type_id, reading_mode, installed_at, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),'active')
       RETURNING *
     `, [
-      new_device_eui.trim().toUpperCase(),
+      new_device_eui?.trim() ? new_device_eui.trim().toUpperCase() : null,
       new_meter_number.trim(),
       old.customer_id,
       new_serial_number || null,
@@ -95,6 +104,8 @@ router.post('/:id/replace', authenticate, authorize('admin', 'operator'), async 
       old.installation_address,
       old.application_id,
       replacement_reason || null,
+      new_water_type_id || old.water_type_id,
+      mode,
     ]);
 
     // Mark old meter as replaced and link to new meter

@@ -21,73 +21,172 @@ const TARIFF_FALLBACK = {
   custom:      { price_per_m3: 1.00, min_charge: 0.00, service_fee: 0.00, vat_rate: 0, penalty_rate: 0, discount_rate: 0 },
 };
 
-const getTariff = async (tariffCode, _query = query) => {
+// waterTypeId, when given, is tried first against a tariff row scoped to
+// that water type; a NULL water_type_id row is the generic/"any water
+// type" fallback and is always tried second. Passing no waterTypeId (old
+// call sites, e.g. routes/tariffs.js GET /:code) goes straight to the
+// generic row — unchanged behavior from before water types existed.
+const getTariff = async (tariffCode, waterTypeId = null, _query = query) => {
   try {
-    const r = await _query(
-      'SELECT * FROM water_tariffs WHERE tariff_code=$1 AND is_active=true LIMIT 1',
+    if (waterTypeId) {
+      const r = await _query(
+        'SELECT * FROM water_tariffs WHERE tariff_code=$1 AND water_type_id=$2 AND is_active=true LIMIT 1',
+        [tariffCode, waterTypeId]
+      );
+      if (r.rows[0]) return r.rows[0];
+    }
+    const generic = await _query(
+      'SELECT * FROM water_tariffs WHERE tariff_code=$1 AND water_type_id IS NULL AND is_active=true LIMIT 1',
       [tariffCode]
     );
-    if (r.rows[0]) return r.rows[0];
+    if (generic.rows[0]) return generic.rows[0];
   } catch { /* table may not exist yet — use fallback */ }
   return { tariff_code: tariffCode, ...(TARIFF_FALLBACK[tariffCode] || TARIFF_FALLBACK.residential) };
 };
 
 // ── Tariff-aware invoice amount calculation ───────────────────────────────────
 
+// Meters are grouped by water_type_id (NULL meters form their own
+// "uncategorized" group, billed at the generic tariff) and each group is
+// priced fully independently — own min-charge floor, service fee, and VAT —
+// per the confirmed billing rule that service fee/VAT apply once per
+// water-type group, not once per customer. Groups then roll up into the
+// same scalar fields this function always returned (total_amount,
+// consumption_m3, meter_id, tariff, ...) so existing callers that only read
+// those keep working unmodified; bd.groups carries the full per-water-type
+// detail for callers that build multi-line invoices.
 const calculateInvoiceBreakdown = async (customerId, startDate, endDate, _query = query) => {
   const metersR = await _query(
-    'SELECT id, meter_number FROM meters WHERE customer_id=$1 AND status=\'active\'',
+    'SELECT id, meter_number, water_type_id FROM meters WHERE customer_id=$1 AND status=\'active\'',
     [customerId]
   );
   const custR = await _query('SELECT tariff_type FROM customers WHERE id=$1', [customerId]);
   const tariffCode = custR.rows[0]?.tariff_type || 'residential';
-  const tariff = await getTariff(tariffCode, _query);
 
-  let totalConsumption = 0;
-  let primaryMeter = null;
-  let prevReading = null, currReading = null;
-
+  const groupsByWaterType = new Map();
   for (const meter of metersR.rows) {
-    const currR = await _query(
-      'SELECT total_consumption FROM meter_readings WHERE meter_id=$1 AND timestamp::date <= $2::date ORDER BY timestamp DESC LIMIT 1',
-      [meter.id, endDate]
-    );
-    if (!currR.rows[0]) continue;
-    const prevR = await _query(
-      'SELECT total_consumption FROM meter_readings WHERE meter_id=$1 AND timestamp::date < $2::date ORDER BY timestamp DESC LIMIT 1',
-      [meter.id, startDate]
-    );
-    const curr = Number(currR.rows[0].total_consumption || 0);
-    const prev = prevR.rows[0] ? Number(prevR.rows[0].total_consumption) : 0;
-    const cons = Math.max(0, curr - prev);
-    totalConsumption += cons;
-    if (!primaryMeter) {
-      primaryMeter = meter;
-      currReading = curr;
-      prevReading = prev;
+    const key = meter.water_type_id || 'null';
+    if (!groupsByWaterType.has(key)) groupsByWaterType.set(key, { water_type_id: meter.water_type_id || null, meters: [] });
+    groupsByWaterType.get(key).meters.push(meter);
+  }
+  // A customer with no active meters still gets exactly one group (matches
+  // the pre-water-type behavior of always pricing against the customer's
+  // tariff even with zero consumption — e.g. a flat min-charge account).
+  if (groupsByWaterType.size === 0) groupsByWaterType.set('null', { water_type_id: null, meters: [] });
+
+  const groups = [];
+  let totalConsumption = 0, totalSubtotal = 0, totalServiceFee = 0, totalVat = 0, totalDiscount = 0, totalAmount = 0;
+
+  for (const g of groupsByWaterType.values()) {
+    const tariff = await getTariff(tariffCode, g.water_type_id, _query);
+    let waterTypeCode = null;
+    if (g.water_type_id) {
+      const wtR = await _query('SELECT code FROM water_types WHERE id=$1', [g.water_type_id]);
+      waterTypeCode = wtR.rows[0]?.code || null;
     }
+
+    let groupConsumption = 0;
+    let primaryMeter = null, prevReading = null, currReading = null;
+
+    for (const meter of g.meters) {
+      const currR = await _query(
+        'SELECT total_consumption FROM meter_readings WHERE meter_id=$1 AND timestamp::date <= $2::date ORDER BY timestamp DESC LIMIT 1',
+        [meter.id, endDate]
+      );
+      if (!currR.rows[0]) continue;
+      const prevR = await _query(
+        'SELECT total_consumption FROM meter_readings WHERE meter_id=$1 AND timestamp::date < $2::date ORDER BY timestamp DESC LIMIT 1',
+        [meter.id, startDate]
+      );
+      const curr = Number(currR.rows[0].total_consumption || 0);
+      const prev = prevR.rows[0] ? Number(prevR.rows[0].total_consumption) : 0;
+      const cons = Math.max(0, curr - prev);
+      groupConsumption += cons;
+      if (!primaryMeter) {
+        primaryMeter = meter;
+        currReading = curr;
+        prevReading = prev;
+      }
+    }
+
+    const usageCharge = groupConsumption * Number(tariff.price_per_m3);
+    const subtotal    = Math.max(Number(tariff.min_charge), usageCharge);
+    const serviceFee  = Number(tariff.service_fee);
+    const vatAmount   = +((subtotal + serviceFee) * (Number(tariff.vat_rate) / 100)).toFixed(2);
+    const discount    = +((subtotal + serviceFee + vatAmount) * (Number(tariff.discount_rate) / 100)).toFixed(2);
+    const total       = +(subtotal + serviceFee + vatAmount - discount).toFixed(2);
+
+    groups.push({
+      water_type_id:    g.water_type_id,
+      water_type:       waterTypeCode,
+      tariff,
+      tariff_code:      tariffCode,
+      consumption_m3:   +groupConsumption.toFixed(3),
+      previous_reading: prevReading !== null ? +Number(prevReading).toFixed(3) : null,
+      current_reading:  currReading !== null ? +Number(currReading).toFixed(3) : null,
+      meter_id:         primaryMeter?.id || null,
+      subtotal:         +subtotal.toFixed(2),
+      service_fee_amount: +serviceFee.toFixed(2),
+      vat_amount:       vatAmount,
+      discount_amount:  discount,
+      total_amount:     total,
+    });
+
+    totalConsumption += groupConsumption;
+    totalSubtotal    += subtotal;
+    totalServiceFee  += serviceFee;
+    totalVat         += vatAmount;
+    totalDiscount    += discount;
+    totalAmount      += total;
   }
 
-  const usageCharge = totalConsumption * Number(tariff.price_per_m3);
-  const subtotal    = Math.max(Number(tariff.min_charge), usageCharge);
-  const serviceFee  = Number(tariff.service_fee);
-  const vatAmount   = +((subtotal + serviceFee) * (Number(tariff.vat_rate) / 100)).toFixed(2);
-  const discount    = +((subtotal + serviceFee + vatAmount) * (Number(tariff.discount_rate) / 100)).toFixed(2);
-  const total       = +(subtotal + serviceFee + vatAmount - discount).toFixed(2);
+  const primary = groups[0] || null;
 
   return {
-    tariff,
+    groups,
+    tariff:           primary?.tariff || null,
     tariff_code:      tariffCode,
     consumption_m3:   +totalConsumption.toFixed(3),
-    previous_reading: prevReading !== null ? +Number(prevReading).toFixed(3) : null,
-    current_reading:  currReading !== null ? +Number(currReading).toFixed(3) : null,
-    meter_id:         primaryMeter?.id || null,
-    subtotal:         +subtotal.toFixed(2),
-    service_fee_amount: +serviceFee.toFixed(2),
-    vat_amount:       vatAmount,
-    discount_amount:  discount,
-    total_amount:     total,
+    previous_reading: primary?.previous_reading ?? null,
+    current_reading:  primary?.current_reading ?? null,
+    meter_id:         primary?.meter_id || null,
+    subtotal:         +totalSubtotal.toFixed(2),
+    service_fee_amount: +totalServiceFee.toFixed(2),
+    vat_amount:       +totalVat.toFixed(2),
+    discount_amount:  +totalDiscount.toFixed(2),
+    total_amount:     +totalAmount.toFixed(2),
   };
+};
+
+// Builds one invoice_items line per water-type group — usage, then a
+// min-charge floor adjustment if the floor exceeded metered usage, then
+// service fee/VAT/discount — each priced off that group's own tariff.
+const buildInvoiceLineItems = (bd, pStartStr, pEndStr) => {
+  const lineItems = [];
+  for (const g of bd.groups) {
+    const label = g.water_type ? ` (${g.water_type})` : '';
+    const pricePerM3   = Number(g.tariff?.price_per_m3 || 0);
+    const usageCharge  = +(g.consumption_m3 * pricePerM3).toFixed(2);
+    const minCharge    = +Number(g.tariff?.min_charge || 0).toFixed(2);
+    const minChargeAdj = +(Math.max(0, minCharge - usageCharge)).toFixed(2);
+    lineItems.push({
+      description: `Water consumption${label} ${pStartStr} to ${pEndStr} (${g.consumption_m3} m³ × $${pricePerM3.toFixed(4)}/m³)`,
+      quantity: g.consumption_m3, unit_price: pricePerM3,
+    });
+    if (minChargeAdj > 0) {
+      lineItems.push({ description: `Minimum charge${label} (floor $${minCharge.toFixed(2)})`, quantity: 1, unit_price: minChargeAdj });
+    }
+    if (g.service_fee_amount > 0) {
+      lineItems.push({ description: `Monthly service fee${label}`, quantity: 1, unit_price: g.service_fee_amount });
+    }
+    if (g.vat_amount > 0) {
+      lineItems.push({ description: `VAT${label} (${g.tariff?.vat_rate}%)`, quantity: 1, unit_price: g.vat_amount });
+    }
+    if (g.discount_amount > 0) {
+      lineItems.push({ description: `Discount${label} (${g.tariff?.discount_rate}%)`, quantity: 1, unit_price: -g.discount_amount });
+    }
+  }
+  return lineItems;
 };
 
 // Legacy thin wrapper kept for backward compatibility
@@ -215,11 +314,16 @@ const postBillingCycleInvoice = async (billingCycleId, invoiceNumber, note, user
   // Use provided breakdown or recalculate
   const bd = breakdown || await calculateInvoiceBreakdown(bc.customer_id, bc.period_start, bc.period_end);
 
-  // Capture meter state at billing time
-  const meterSnap = bd.meter_id
-    ? (await query('SELECT id,device_eui,meter_number,serial_number,firmware_version,installation_address FROM meters WHERE id=$1', [bd.meter_id])).rows[0] || null
-    : null;
-  const tariffSnap = bd.tariff || null;
+  // Capture meter/tariff state at billing time, one entry per water-type
+  // group, so a later tariff-table edit can't retroactively change what an
+  // already-issued invoice says it charged.
+  const meterSnaps = [];
+  for (const g of bd.groups) {
+    if (!g.meter_id) continue;
+    const snap = (await query('SELECT id,device_eui,meter_number,serial_number,firmware_version,installation_address FROM meters WHERE id=$1', [g.meter_id])).rows[0];
+    if (snap) meterSnaps.push({ ...snap, water_type: g.water_type });
+  }
+  const tariffSnaps = bd.groups.map(g => g.tariff).filter(Boolean);
 
   const r = await query(
     `INSERT INTO invoices
@@ -234,8 +338,8 @@ const postBillingCycleInvoice = async (billingCycleId, invoiceNumber, note, user
       bd.consumption_m3, bd.previous_reading, bd.current_reading,
       bd.meter_id, bd.subtotal, bd.vat_amount, bd.service_fee_amount, bd.discount_amount,
       note, userId,
-      meterSnap ? JSON.stringify(meterSnap) : null,
-      tariffSnap ? JSON.stringify(tariffSnap) : null,
+      meterSnaps.length ? JSON.stringify(meterSnaps) : null,
+      tariffSnaps.length ? JSON.stringify(tariffSnaps) : null,
       'meter_reading',
     ]
   );
@@ -245,7 +349,7 @@ const postBillingCycleInvoice = async (billingCycleId, invoiceNumber, note, user
 
   const periodStart  = bc.period_start ? new Date(bc.period_start).toISOString().slice(0, 10) : '';
   const periodEnd    = bc.period_end   ? new Date(bc.period_end).toISOString().slice(0, 10)   : '';
-  const invoiceItems = [{ description: `Water usage from ${periodStart} to ${periodEnd}`, quantity: 1, unit_price: bc.amount }];
+  const invoiceItems = buildInvoiceLineItems(bd, periodStart, periodEnd);
 
   for (let i = 0; i < invoiceItems.length; i++) {
     const item = invoiceItems[i];
@@ -309,10 +413,13 @@ const generateInvoiceForCustomer = async (customerId, opts = {}) => {
     const existInv = await client.query('SELECT id FROM invoices WHERE invoice_number=$1', [invNumber]);
     if (existInv.rows.length) throw new Error(`Invoice number ${invNumber} already exists`);
 
-    const meterSnap = bd.meter_id
-      ? (await client.query('SELECT id,device_eui,meter_number,serial_number,firmware_version,installation_address FROM meters WHERE id=$1', [bd.meter_id])).rows[0] || null
-      : null;
-    const tariffSnap = bd.tariff || null;
+    const meterSnaps = [];
+    for (const g of bd.groups) {
+      if (!g.meter_id) continue;
+      const snap = (await client.query('SELECT id,device_eui,meter_number,serial_number,firmware_version,installation_address FROM meters WHERE id=$1', [g.meter_id])).rows[0];
+      if (snap) meterSnaps.push({ ...snap, water_type: g.water_type });
+    }
+    const tariffSnaps = bd.groups.map(g => g.tariff).filter(Boolean);
 
     const r = await client.query(
       `INSERT INTO invoices
@@ -327,34 +434,14 @@ const generateInvoiceForCustomer = async (customerId, opts = {}) => {
         bd.consumption_m3, bd.previous_reading, bd.current_reading,
         bd.meter_id, bd.subtotal, bd.vat_amount, bd.service_fee_amount, bd.discount_amount,
         opts.notes || null, userId,
-        meterSnap ? JSON.stringify(meterSnap) : null,
-        tariffSnap ? JSON.stringify(tariffSnap) : null,
+        meterSnaps.length ? JSON.stringify(meterSnaps) : null,
+        tariffSnaps.length ? JSON.stringify(tariffSnaps) : null,
         'meter_reading',
       ]
     );
     const invoice = r.rows[0];
 
-    // Build line items: usage + min-charge adjustment (if floor applied) + service fee + VAT + discount
-    const lineItems  = [];
-    const usageCharge  = +(bd.consumption_m3 * Number(bd.tariff?.price_per_m3 || 0)).toFixed(2);
-    const minCharge    = +Number(bd.tariff?.min_charge || 0).toFixed(2);
-    const minChargeAdj = +(Math.max(0, minCharge - usageCharge)).toFixed(2);
-    lineItems.push({
-      description: `Water consumption ${pStartStr} to ${pEndStr} (${bd.consumption_m3} m³ × $${Number(bd.tariff?.price_per_m3 || 0).toFixed(4)}/m³)`,
-      quantity: bd.consumption_m3, unit_price: Number(bd.tariff?.price_per_m3 || 0),
-    });
-    if (minChargeAdj > 0) {
-      lineItems.push({ description: `Minimum charge (floor $${minCharge.toFixed(2)})`, quantity: 1, unit_price: minChargeAdj });
-    }
-    if (bd.service_fee_amount > 0) {
-      lineItems.push({ description: 'Monthly service fee', quantity: 1, unit_price: bd.service_fee_amount });
-    }
-    if (bd.vat_amount > 0) {
-      lineItems.push({ description: `VAT (${bd.tariff?.vat_rate}%)`, quantity: 1, unit_price: bd.vat_amount });
-    }
-    if (bd.discount_amount > 0) {
-      lineItems.push({ description: `Discount (${bd.tariff?.discount_rate}%)`, quantity: 1, unit_price: -bd.discount_amount });
-    }
+    const lineItems = buildInvoiceLineItems(bd, pStartStr, pEndStr);
 
     for (let i = 0; i < lineItems.length; i++) {
       const item = lineItems[i];
@@ -503,7 +590,7 @@ const validateBillingPeriod = async (opts = {}, { _query = query } = {}) => {
     return { valid: false, errors, warnings, customerIssues, periodStart: pStartStr, periodEnd: pEndStr, totalCustomers: 0 };
   }
 
-  let duplicateCount = 0, missingReadCount = 0, negativeConsCount = 0, zeroConsCount = 0, missingTariffCount = 0;
+  let duplicateCount = 0, missingReadCount = 0, negativeConsCount = 0, zeroConsCount = 0, missingTariffCount = 0, missingWaterTypeCount = 0;
 
   for (const customer of customersR.rows) {
     const dupR = await _query(
@@ -522,8 +609,12 @@ const validateBillingPeriod = async (opts = {}, { _query = query } = {}) => {
       missingTariffCount++;
     }
 
-    const metersR = await _query('SELECT id, meter_number FROM meters WHERE customer_id=$1 AND status=\'active\'', [customer.id]);
+    const metersR = await _query('SELECT id, meter_number, water_type_id FROM meters WHERE customer_id=$1 AND status=\'active\'', [customer.id]);
     for (const meter of metersR.rows) {
+      if (!meter.water_type_id) {
+        customerIssues.push({ customerId: customer.id, customerName: customer.full_name, houseNumber: customer.house_number, issue: `Meter ${meter.meter_number}: no water type set — billed at the generic/fallback rate`, severity: 'info', code: 'MISSING_WATER_TYPE' });
+        missingWaterTypeCount++;
+      }
       const currR = await _query(
         'SELECT total_consumption FROM meter_readings WHERE meter_id=$1 AND timestamp::date <= $2::date ORDER BY timestamp DESC LIMIT 1',
         [meter.id, periodEnd]
@@ -554,8 +645,9 @@ const validateBillingPeriod = async (opts = {}, { _query = query } = {}) => {
   if (negativeConsCount > 0) warnings.push({ code: 'HAS_NEGATIVE_CONSUMPTION', message: `${negativeConsCount} meter(s) show negative consumption.` });
   if (zeroConsCount     > 0) warnings.push({ code: 'HAS_ZERO_CONSUMPTION',     message: `${zeroConsCount} meter(s) show zero consumption.` });
   if (missingTariffCount > 0) warnings.push({ code: 'HAS_MISSING_TARIFF',     message: `${missingTariffCount} customer(s) have an unknown tariff.` });
+  if (missingWaterTypeCount > 0) warnings.push({ code: 'HAS_MISSING_WATER_TYPE', message: `${missingWaterTypeCount} meter(s) have no water type set — billed at the generic/fallback rate.` });
 
-  return { valid: errors.length === 0, errors, warnings, customerIssues, periodStart: pStartStr, periodEnd: pEndStr, totalCustomers: customersR.rows.length, duplicateCount, missingReadCount, negativeConsCount, zeroConsCount, missingTariffCount };
+  return { valid: errors.length === 0, errors, warnings, customerIssues, periodStart: pStartStr, periodEnd: pEndStr, totalCustomers: customersR.rows.length, duplicateCount, missingReadCount, negativeConsCount, zeroConsCount, missingTariffCount, missingWaterTypeCount };
 };
 
 // ── Cancel / Post pending run ─────────────────────────────────────────────────
@@ -746,7 +838,7 @@ const previewMonthlyBilling = async (opts = {}, { _query = query } = {}) => {
   );
 
   const preview = [];
-  let totalEstimatedRevenue = 0, totalEstimatedConsumption = 0;
+  let totalEstimatedRevenue = 0, totalEstimatedConsumption = 0, missingWaterTypeCount = 0;
 
   for (const customer of customers.rows) {
     const billingAccount = (customer.house_number && customer.house_number.trim()) ? customer.house_number.trim() : null;
@@ -760,19 +852,24 @@ const previewMonthlyBilling = async (opts = {}, { _query = query } = {}) => {
       continue;
     }
 
-    const metersR  = await _query('SELECT id, meter_number FROM meters WHERE customer_id=$1 AND status=\'active\'', [customer.id]);
+    const metersR  = await _query('SELECT id, meter_number, water_type_id FROM meters WHERE customer_id=$1 AND status=\'active\'', [customer.id]);
     const tariffCode = customer.customer_tariff_type || 'residential';
-    const tariff   = await getTariff(tariffCode, _query);
     const meterDetails = [];
     let customerAmount = 0, customerConsumed = 0;
 
     for (const meter of metersR.rows) {
+      // Each meter is priced against its own water type's tariff (falls
+      // back to the generic tariff row if unset) — mirrors how
+      // calculateInvoiceBreakdown groups meters for the real invoice, so
+      // this preview's per-meter estimate matches what actually gets billed.
+      const tariff = await getTariff(tariffCode, meter.water_type_id, _query);
+      if (!meter.water_type_id) missingWaterTypeCount++;
       const currR = await _query('SELECT total_consumption, timestamp FROM meter_readings WHERE meter_id=$1 AND timestamp::date <= $2::date ORDER BY timestamp DESC LIMIT 1', [meter.id, periodEnd]);
       const prevR = await _query('SELECT total_consumption, timestamp FROM meter_readings WHERE meter_id=$1 AND timestamp::date < $2::date ORDER BY timestamp DESC LIMIT 1', [meter.id, periodStart]);
       const currentVal  = currR.rows[0] ? Number(currR.rows[0].total_consumption) : null;
       const previousVal = prevR.rows[0] ? Number(prevR.rows[0].total_consumption) : 0;
       if (currentVal === null) {
-        meterDetails.push({ meterNumber: meter.meter_number, tariff: tariffCode, pricePerM3: Number(tariff.price_per_m3), previousReading: null, currentReading: null, consumption: null, estimatedAmount: null, skipReason: 'No readings found' });
+        meterDetails.push({ meterNumber: meter.meter_number, tariff: tariffCode, pricePerM3: Number(tariff.price_per_m3), previousReading: null, currentReading: null, consumption: null, estimatedAmount: null, skipReason: 'No readings found', missingWaterType: !meter.water_type_id });
         continue;
       }
       const consumption = Number((currentVal - previousVal).toFixed(3));
@@ -781,7 +878,7 @@ const previewMonthlyBilling = async (opts = {}, { _query = query } = {}) => {
       const amount      = +(Math.max(Number(tariff.min_charge), usageCharge) + Number(tariff.service_fee)).toFixed(2);
       customerAmount   += amount;
       customerConsumed += billable;
-      meterDetails.push({ meterNumber: meter.meter_number, tariff: tariffCode, pricePerM3: Number(tariff.price_per_m3), minCharge: Number(tariff.min_charge), serviceFee: Number(tariff.service_fee), previousReading: previousVal, previousReadingDate: prevR.rows[0] ? new Date(prevR.rows[0].timestamp).toISOString().slice(0, 10) : null, currentReading: currentVal, currentReadingDate: new Date(currR.rows[0].timestamp).toISOString().slice(0, 10), consumption, estimatedAmount: amount, skipReason: consumption <= 0 ? 'Zero or negative consumption' : null });
+      meterDetails.push({ meterNumber: meter.meter_number, tariff: tariffCode, pricePerM3: Number(tariff.price_per_m3), minCharge: Number(tariff.min_charge), serviceFee: Number(tariff.service_fee), previousReading: previousVal, previousReadingDate: prevR.rows[0] ? new Date(prevR.rows[0].timestamp).toISOString().slice(0, 10) : null, currentReading: currentVal, currentReadingDate: new Date(currR.rows[0].timestamp).toISOString().slice(0, 10), consumption, estimatedAmount: amount, skipReason: consumption <= 0 ? 'Zero or negative consumption' : null, missingWaterType: !meter.water_type_id });
     }
 
     const wouldSkip = customerAmount === 0;
@@ -789,7 +886,11 @@ const previewMonthlyBilling = async (opts = {}, { _query = query } = {}) => {
     preview.push({ customerId: customer.id, houseNumber: customer.house_number, customerName: customer.full_name, billingAccount, wouldSkip, skipReason: wouldSkip ? 'Zero consumption' : null, meters: meterDetails, estimatedAmount: wouldSkip ? null : Number(customerAmount.toFixed(2)), totalConsumption: wouldSkip ? null : Number(customerConsumed.toFixed(3)) });
   }
 
-  return { periodStart: pStartStr, periodEnd: pEndStr, totalCustomers: customers.rows.length, willBill: preview.filter(p => !p.wouldSkip).length, willSkip: preview.filter(p => p.wouldSkip).length, totalEstimatedRevenue: Number(totalEstimatedRevenue.toFixed(2)), totalEstimatedConsumption: Number(totalEstimatedConsumption.toFixed(3)), preview };
+  const warnings = missingWaterTypeCount > 0
+    ? [{ code: 'MISSING_WATER_TYPE', message: `${missingWaterTypeCount} meter(s) have no water type set — billed at the generic/fallback rate.` }]
+    : [];
+
+  return { periodStart: pStartStr, periodEnd: pEndStr, totalCustomers: customers.rows.length, willBill: preview.filter(p => !p.wouldSkip).length, willSkip: preview.filter(p => p.wouldSkip).length, totalEstimatedRevenue: Number(totalEstimatedRevenue.toFixed(2)), totalEstimatedConsumption: Number(totalEstimatedConsumption.toFixed(3)), missingWaterTypeCount, warnings, preview };
 };
 
 // ── Overdue ───────────────────────────────────────────────────────────────────
