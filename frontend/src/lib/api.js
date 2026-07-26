@@ -105,6 +105,10 @@ export const billingAPI = {
   update:        (id, d)  => api.put(`/billing/${id}`, d),
   recordPayment: (id, d)  => api.post(`/billing/${id}/payment`, d),
   getPayments:   (id)     => api.get(`/billing/${id}/payments`),
+  // Real PDF generator (GET /billing/:id/pdf, keyed by invoice UUID). The
+  // route requires an Authorization header, so this must be fetched through
+  // the authenticated axios instance — a plain <a href> can't carry it.
+  pdf:           (id)     => api.get(`/billing/${id}/pdf`, { responseType: 'blob' }),
   // Billing Center
   getSettings:    ()      => api.get('/billing/settings'),
   updateSettings: (d)     => api.put('/billing/settings', d),

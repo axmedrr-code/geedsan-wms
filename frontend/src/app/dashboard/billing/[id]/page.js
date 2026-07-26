@@ -48,6 +48,7 @@ export default function BillingDetailPage() {
   const [paymentData, setPaymentData] = useState({ amount: '', method: 'cash', reference: '', note: '' });
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [showPayments, setShowPayments] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(null); // 'view' | 'download' | null
 
   const { data, isLoading } = useQuery({
     queryKey: ['billing-detail', id],
@@ -88,6 +89,33 @@ export default function BillingDetailPage() {
     onError: (e) => toast.error(e.response?.data?.error || 'Sync failed'),
   });
 
+  // Was previously a plain <a href="/api/reports/invoice-{number}.pdf">
+  // pointing at a static file path that's never actually generated (the
+  // real generator streams a PDF on the fly, keyed by UUID, at
+  // /billing/:id/pdf) — every click 404'd. Also that route requires auth,
+  // which a plain anchor tag never sends. Fetching through the
+  // authenticated axios instance fixes both.
+  const handlePdf = async (mode, invoiceNumber) => {
+    setPdfLoading(mode);
+    try {
+      const res = await billingAPI.pdf(id);
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      if (mode === 'view') {
+        window.open(url, '_blank');
+      } else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${invoiceNumber}.pdf`;
+        a.click();
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      toast.error('Failed to generate invoice PDF');
+    } finally {
+      setPdfLoading(null);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -122,7 +150,6 @@ export default function BillingDetailPage() {
   const periodStart = periodMatch?.[1];
   const periodEnd = periodMatch?.[2];
 
-  const pdfUrl = `/reports/invoice-${invoice.invoice_number}.pdf`;
   const ODOO_BASE = process.env.NEXT_PUBLIC_ODOO_URL || 'http://localhost:8069';
 
   return (
@@ -141,14 +168,16 @@ export default function BillingDetailPage() {
 
         <div className="flex flex-wrap gap-2">
           {/* PDF */}
-          <a href={`/api${pdfUrl}`} target="_blank" rel="noreferrer"
+          <button onClick={() => handlePdf('view', invoice.invoice_number)} disabled={pdfLoading !== null}
              className="btn-secondary text-sm flex items-center gap-1.5">
-            <FileText className="w-4 h-4" /> View PDF
-          </a>
-          <a href={`/api${pdfUrl}`} download={`${invoice.invoice_number}.pdf`}
+            {pdfLoading === 'view' ? <div className="w-4 h-4 border-2 border-slate-400/30 border-t-slate-400 rounded-full animate-spin" /> : <FileText className="w-4 h-4" />}
+            View PDF
+          </button>
+          <button onClick={() => handlePdf('download', invoice.invoice_number)} disabled={pdfLoading !== null}
              className="btn-secondary text-sm flex items-center gap-1.5">
-            <Download className="w-4 h-4" /> Download
-          </a>
+            {pdfLoading === 'download' ? <div className="w-4 h-4 border-2 border-slate-400/30 border-t-slate-400 rounded-full animate-spin" /> : <Download className="w-4 h-4" />}
+            Download
+          </button>
 
           {/* Register Payment */}
           {!isPaid && !isCancelled && (
