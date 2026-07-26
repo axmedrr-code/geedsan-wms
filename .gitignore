@@ -6,9 +6,9 @@ node_modules/
 *.log
 dist/
 .next/
-reports/
-uploads/
-logs/
+/backend/reports/
+/backend/uploads/
+/backend/logs/
 *.sql.bak
 backup_pre_*.sql
 docker/certs/
