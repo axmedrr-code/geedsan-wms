@@ -838,6 +838,37 @@ const getOdooStatus = async () => {
   }
 };
 
+// odoo.version() above only proves the Odoo server is reachable — it's an
+// unauthenticated call. Every sync failure this project has actually hit in
+// production (wrong ODOO_API_KEY, mismatched ODOO_USERNAME, an expired key)
+// is an *auth* failure, which nothing previously checked proactively — it
+// only surfaced the next time a user happened to trigger a sync, by which
+// point WMS and Odoo could have been silently drifting apart for hours or
+// days. Wired into scheduler.js on a 15-minute cron; only notifies on a
+// state *change* (newly failing, or newly recovered) so a prolonged outage
+// doesn't spam every 15 minutes.
+let lastOdooAuthOk = true;
+
+const checkOdooAuthHealth = async ({ _odoo = odoo, _notify = require('./notificationService').notifySystemEvent } = {}) => {
+  try {
+    await _odoo.authenticate(true);
+    if (!lastOdooAuthOk) {
+      lastOdooAuthOk = true;
+      await _notify('odoo_auth_failure', 'Odoo authentication recovered',
+        `Odoo XML-RPC authentication is working again as of ${new Date().toISOString()}. Any invoices/payments/customers queued during the outage will catch up via the retry queue — verify with GET /api/odoo/queue or the "Verify vs Odoo" panel on affected invoices.`);
+    }
+    return { ok: true };
+  } catch (err) {
+    if (lastOdooAuthOk) {
+      lastOdooAuthOk = false;
+      logger.error('Odoo authentication check failed', { error: err.message });
+      await _notify('odoo_auth_failure', 'Odoo authentication is failing',
+        `Odoo XML-RPC authentication started failing as of ${new Date().toISOString()}: ${err.message}. No invoices, payments, or customers are syncing to Odoo until this is fixed — check ODOO_USERNAME/ODOO_API_KEY in .env.production and that the API key was generated under that same Odoo user.`);
+    }
+    return { ok: false, error: err.message };
+  }
+};
+
 // Returns a per-customer field-level verification report comparing WMS data to
 // the synced Odoo partner. Checks 10 key fields per customer.
 const verifySyncedCustomers = async () => {
@@ -1187,6 +1218,7 @@ module.exports = {
   processRetryQueue,
   getOdooQueue,
   getOdooStatus,
+  checkOdooAuthHealth,
   verifySyncedCustomers,
   verifyInvoiceSync,
   verifyPaymentSync,

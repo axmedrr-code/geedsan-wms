@@ -2,7 +2,7 @@ const { CronJob } = require('cron');
 const { query } = require('../config/database');
 const { checkOfflineMeters, checkOfflineGateways, checkAbnormalConsumption } = require('./alarmService');
 const { markOverdueInvoices, runMonthlyAutoBilling } = require('./billingService');
-const { processRetryQueue } = require('./odooService');
+const { processRetryQueue, checkOdooAuthHealth } = require('./odooService');
 const { processFailedDownlinks } = require('./downlinkRetryService');
 const { runDatabaseBackup } = require('./backupService');
 const { aggregateYesterdayForAllMeters } = require('./consumptionService');
@@ -37,6 +37,14 @@ const startScheduler = () => {
     logger.info('⏰ Processing Odoo sync retry queue...');
     const processed = await processRetryQueue();
     logger.info(`🔁 Processed ${processed} Odoo sync records.`);
+  }, null, true);
+
+  // Proactive auth check — every sync failure this project has hit in
+  // production has been an auth failure (bad/expired API key, mismatched
+  // username), which nothing previously checked until a user happened to
+  // trigger a sync. Notifies on state change only (see checkOdooAuthHealth).
+  new CronJob('*/15 * * * *', async () => {
+    await checkOdooAuthHealth();
   }, null, true);
 
   new CronJob('*/5 * * * *', async () => {

@@ -14,6 +14,7 @@ const ALARM_TYPES = [
   { key: 'reverse_flow', label: 'Reverse Flow' },
   { key: 'pipe_burst', label: 'Pipe Burst' },
   { key: 'communication_loss', label: 'Communication Loss' },
+  { key: 'odoo_auth_failure', label: 'Odoo Sync Failing (auth)' },
 ];
 
 const CHANNELS = [
